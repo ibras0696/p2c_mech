@@ -134,7 +134,7 @@ class CachedPlatformSessionRepository(PlatformSessionRepository):
             logger.warning("platform_session_cache_get_failed error=%s", type(exc).__name__)
         else:
             if cached is not None:
-                logger.info("platform_session_cache_hit")
+                logger.debug("platform_session_cache_hit")
                 return cached
             logger.info("platform_session_cache_miss")
         stored = await self._primary.current()

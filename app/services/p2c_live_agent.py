@@ -384,24 +384,14 @@ class P2CLiveAgent:
                 event.in_asset,
                 event.provider,
             )
-            logger.info(
-                "p2c_live_agent_claim_context socket_order_id=%s brand=%s out_asset=%s url_host=%s payload=%s",
-                event.socket_order_id,
-                event.brand_name,
-                event.out_asset,
-                _url_host(event.url),
-                _short(event.payload),
-            )
             detect_to_take_start_ms = int((time.perf_counter() - received_at) * 1000)
             take_started = time.perf_counter()
-            take_started_at = datetime.now(UTC).isoformat(timespec="milliseconds")
             logger.info(
-                "p2c_live_agent_take_start socket_order_id=%s detect_to_take_start_ms=%d take_started_at=%s",
+                "p2c_live_agent_take_start socket_order_id=%s detect_to_take_start_ms=%d",
                 event.socket_order_id,
                 detect_to_take_start_ms,
-                take_started_at,
             )
-            payment_id = await self._payments_client.take(
+            payment_id = await self._take_payment_id(
                 socket_order_id=event.socket_order_id,
                 session=session,
             )
@@ -413,6 +403,14 @@ class P2CLiveAgent:
                 payment_id,
                 take_ms,
                 total_from_detect_ms,
+            )
+            logger.info(
+                "p2c_live_agent_claim_context socket_order_id=%s brand=%s out_asset=%s url_host=%s payload=%s",
+                event.socket_order_id,
+                event.brand_name,
+                event.out_asset,
+                _url_host(event.url),
+                _short(event.payload),
             )
             confirm_started = time.perf_counter()
             details = await self._confirm_owned(payment_id=payment_id)
@@ -614,6 +612,62 @@ class P2CLiveAgent:
         self._session_l1_cache = None
         self._session_l1_cached_at_monotonic = 0.0
         return None
+
+    async def _take_payment_id(
+        self,
+        *,
+        socket_order_id: str,
+        session: PlatformSession,
+    ) -> int:
+        burst_raw = getattr(self._settings, "platform_take_burst_size", 1)
+        burst = max(1, min(int(burst_raw), 2))
+        if burst == 1:
+            return await self._payments_client.take(
+                socket_order_id=socket_order_id,
+                session=session,
+            )
+        logger.info(
+            "p2c_live_agent_take_burst_started socket_order_id=%s burst=%d",
+            socket_order_id,
+            burst,
+        )
+        tasks: dict[asyncio.Task[int], int] = {
+            asyncio.create_task(
+                self._payments_client.take(socket_order_id=socket_order_id, session=session)
+            ): idx
+            for idx in range(burst)
+        }
+        errors: list[Exception] = []
+        pending = set(tasks.keys())
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for done_task in done:
+                attempt = tasks[done_task]
+                try:
+                    payment_id = done_task.result()
+                except Exception as exc:
+                    errors.append(exc if isinstance(exc, Exception) else Exception(str(exc)))
+                    logger.info(
+                        "p2c_live_agent_take_burst_attempt_failed socket_order_id=%s attempt=%d error=%s",
+                        socket_order_id,
+                        attempt,
+                        type(exc).__name__,
+                    )
+                    continue
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    await asyncio.gather(*pending, return_exceptions=True)
+                logger.info(
+                    "p2c_live_agent_take_burst_succeeded socket_order_id=%s attempt=%d payment_id=%s",
+                    socket_order_id,
+                    attempt,
+                    payment_id,
+                )
+                return payment_id
+        if errors:
+            raise errors[0]
+        raise P2CPaymentsError("Take burst failed without explicit error")
 
     @staticmethod
     def _log_process_event_task_result(task: asyncio.Task[None]) -> None:

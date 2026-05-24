@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     platform_cf_bm_cookie: str = Field(default="", alias="PLATFORM_CF_BM_COOKIE")
     platform_cookie_header: str = Field(default="", alias="PLATFORM_COOKIE_HEADER")
     platform_claim_from_snapshot: bool = Field(default=False, alias="PLATFORM_CLAIM_FROM_SNAPSHOT")
+    platform_take_burst_size: int = Field(default=1, alias="PLATFORM_TAKE_BURST_SIZE")
     playwright_headless: bool = Field(default=True, alias="PLAYWRIGHT_HEADLESS")
     browser_runtime: str = Field(default="playwright", alias="BROWSER_RUNTIME")
 

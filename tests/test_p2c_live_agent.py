@@ -19,6 +19,7 @@ from app.services.p2c_live_agent import P2CLiveAgent
 class FakePaymentsClient:
     def __init__(self) -> None:
         self.take_calls: list[str] = []
+        self.take_side_effects: list[tuple[float, int | Exception]] = []
         self.complete_calls: list[tuple[int, str]] = []
         self.cancel_calls: list[tuple[int, str]] = []
         self.list_accounts_calls = 0
@@ -30,6 +31,14 @@ class FakePaymentsClient:
     async def take(self, *, socket_order_id: str, session: PlatformSession) -> int:
         del session
         self.take_calls.append(socket_order_id)
+        index = len(self.take_calls) - 1
+        if index < len(self.take_side_effects):
+            delay, result = self.take_side_effects[index]
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if isinstance(result, Exception):
+                raise result
+            return result
         return 3566992
 
     async def get_payment(self, *, payment_id: int, session: PlatformSession) -> P2CPaymentDetails:
@@ -653,6 +662,7 @@ def make_settings() -> Settings:
             platform_base_url="https://app.send.tg",
             platform_ws_url="wss://app.send.tg/internal/v1/p2c-socket/?EIO=4&transport=websocket",
             platform_claim_from_snapshot=False,
+            platform_take_burst_size=1,
         ),
     )
 
@@ -704,3 +714,58 @@ async def test_live_agent_uses_session_hint_without_repository_read() -> None:
 
     assert loaded == session
     assert repository.current_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_live_agent_take_burst_uses_second_success_when_first_fails() -> None:
+    state = InMemoryAgentState()
+    state.run()
+    repository = InMemoryPlatformSessionRepository()
+    await repository.save(
+        PlatformSession(
+            access_token="token",
+            cf_bm="cf",
+            updated_at=datetime.now(UTC),
+        )
+    )
+    notifications: list[ActiveOrder] = []
+    agent = P2CLiveAgent(
+        settings=cast(
+            Settings,
+            SimpleNamespace(
+                platform_base_url="https://app.send.tg",
+                platform_ws_url="wss://app.send.tg/internal/v1/p2c-socket/?EIO=4&transport=websocket",
+                platform_claim_from_snapshot=False,
+                platform_take_burst_size=2,
+            ),
+        ),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, notifications),
+    )
+    fake = FakePaymentsClient()
+    fake.take_side_effects = [
+        (0.05, P2CPaymentsError("first failed")),
+        (0.01, 3567999),
+    ]
+    agent._payments_client = fake  # type: ignore[assignment]
+
+    await agent._process_event(
+        P2COrderEvent(
+            socket_order_id="burst-1",
+            in_amount=state.snapshot().min_amount + 1,
+            in_asset="RUB",
+            out_asset="USDT",
+            url="https://multiqr.test",
+            payload="trx-123",
+            brand_name="Shop",
+            provider="platiqr",
+        ),
+        0.0,
+        agent._pause_generation,  # type: ignore[attr-defined]
+    )
+
+    snapshot = state.snapshot()
+    assert len(fake.take_calls) == 2
+    assert snapshot.active_count == 1
+    assert snapshot.active_orders[0].id == "3567999"
