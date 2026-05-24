@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final
 from urllib.parse import urlparse
 
+from app.bot.session_state import PlatformSession
 from app.bot.state import ActiveOrder, AgentMode, InMemoryAgentState
 from app.core.config import Settings
 from app.core.logging import get_logger
@@ -60,6 +61,10 @@ class P2CLiveAgent:
         self._completing: set[str] = set()
         self._socket_client: P2CSocketClient | None = None
         self._pause_generation = 0
+        self._cached_account_method_id: str = ""
+        self._session_l1_cache: PlatformSession | None = None
+        self._session_l1_cached_at_monotonic = 0.0
+        self._session_l1_ttl_seconds = 2.0
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -74,6 +79,10 @@ class P2CLiveAgent:
     def on_run(self) -> None:
         return
 
+    def set_session_hint(self, session: PlatformSession) -> None:
+        self._session_l1_cache = session
+        self._session_l1_cached_at_monotonic = time.monotonic()
+
     async def aclose(self) -> None:
         await self._payments_client.aclose()
 
@@ -83,7 +92,7 @@ class P2CLiveAgent:
                 if self._state.snapshot().mode == AgentMode.PAUSED:
                     await asyncio.sleep(0.5)
                     continue
-                session = await self._session_repository.current()
+                session = await self._get_session()
                 if session is None or not session.cookie_header:
                     await asyncio.sleep(2)
                     continue
@@ -119,17 +128,27 @@ class P2CLiveAgent:
             if order_id in self._completing:
                 raise P2CPaymentsError("Completion already in progress for this order")
             self._completing.add(order_id)
+        details: P2CPaymentDetails | None = None
+        resolved_method_id = ""
+        resolved_source = "none"
         try:
             logger.info("p2c_live_agent_complete_started payment_id=%s", order_id)
             order = self._state.get_active_order(order_id)
             if order is None:
                 raise P2CPaymentsError("Order is not active")
-            session = await self._session_repository.current()
+            session = await self._get_session()
             if session is None:
                 raise P2CPaymentsError("Platform session is missing")
             details = await self._payments_client.get_payment(
                 payment_id=int(order.id),
                 session=session,
+            )
+            logger.info(
+                "p2c_live_agent_complete_details payment_id=%s status=%s details_method_id=%s raw_account_id=%s",
+                order.id,
+                details.status,
+                _bool_flag(details.method_id),
+                _bool_flag(_extract_method_id_from_raw(details.raw)),
             )
             status = details.status.lower()
             if status in FINAL_STATUSES:
@@ -148,11 +167,23 @@ class P2CLiveAgent:
                 return
             if status not in OWNED_OK_STATUSES:
                 raise P2CPaymentsError(f"Order status is not completable: {details.status}")
-            method_id = order.method_id or details.method_id
+            method_id, source = await self._resolve_method_id(
+                order=order,
+                details=details,
+                session=session,
+            )
+            resolved_method_id = method_id
+            resolved_source = source
             if not method_id:
                 raise P2CPaymentsError(
                     "Order has no method id in payment details. Reopen method selection in platform and retry."
                 )
+            logger.info(
+                "p2c_live_agent_complete_method_resolved payment_id=%s method_id=%s source=%s",
+                order.id,
+                method_id,
+                source,
+            )
             if not order.method_id and method_id:
                 self._state.upsert_active_order(replace(order, method_id=method_id))
             await self._payments_client.complete(
@@ -169,10 +200,15 @@ class P2CLiveAgent:
             )
         except Exception as exc:
             logger.warning(
-                "p2c_live_agent_complete_failed payment_id=%s error=%s reason=%s",
+                "p2c_live_agent_complete_failed payment_id=%s error=%s reason=%s details_status=%s details_method_id=%s raw_account_id=%s resolved_method_id=%s resolved_source=%s",
                 order_id,
                 type(exc).__name__,
                 str(exc),
+                details.status if details is not None else "",
+                _bool_flag(details.method_id) if details is not None else "n/a",
+                _bool_flag(_extract_method_id_from_raw(details.raw)) if details is not None else "n/a",
+                _bool_flag(resolved_method_id),
+                resolved_source,
             )
             raise
         finally:
@@ -180,29 +216,65 @@ class P2CLiveAgent:
                 self._completing.discard(order_id)
 
     async def cancel_order(self, order_id: str) -> None:
-        order = self._state.get_active_order(order_id)
-        if order is None:
-            raise P2CPaymentsError("Order is not active")
-        session = await self._session_repository.current()
-        if session is None:
-            raise P2CPaymentsError("Platform session is missing")
-        details = await self._payments_client.get_payment(
-            payment_id=int(order.id),
-            session=session,
-        )
-        method_id = order.method_id or details.method_id
-        await self._payments_client.cancel(
-            payment_id=int(order.id),
-            method_id=method_id,
-            session=session,
-        )
-        self._state.mark_paid(order.id)
-        await self._remove_order_from_storage(order.id, final_status="cancelled", reason="operator_cancelled")
-        logger.info(
-            "p2c_live_agent_cancel_succeeded payment_id=%s source_order_id=%s",
-            order.id,
-            order.source_order_id,
-        )
+        details: P2CPaymentDetails | None = None
+        resolved_method_id = ""
+        resolved_source = "none"
+        try:
+            order = self._state.get_active_order(order_id)
+            if order is None:
+                raise P2CPaymentsError("Order is not active")
+            session = await self._get_session()
+            if session is None:
+                raise P2CPaymentsError("Platform session is missing")
+            details = await self._payments_client.get_payment(
+                payment_id=int(order.id),
+                session=session,
+            )
+            logger.info(
+                "p2c_live_agent_cancel_details payment_id=%s status=%s details_method_id=%s raw_account_id=%s",
+                order.id,
+                details.status,
+                _bool_flag(details.method_id),
+                _bool_flag(_extract_method_id_from_raw(details.raw)),
+            )
+            method_id, source = await self._resolve_method_id(
+                order=order,
+                details=details,
+                session=session,
+            )
+            resolved_method_id = method_id
+            resolved_source = source
+            logger.info(
+                "p2c_live_agent_cancel_method_resolved payment_id=%s method_id=%s source=%s",
+                order.id,
+                method_id,
+                source,
+            )
+            await self._payments_client.cancel(
+                payment_id=int(order.id),
+                method_id=method_id,
+                session=session,
+            )
+            self._state.mark_paid(order.id)
+            await self._remove_order_from_storage(order.id, final_status="cancelled", reason="operator_cancelled")
+            logger.info(
+                "p2c_live_agent_cancel_succeeded payment_id=%s source_order_id=%s",
+                order.id,
+                order.source_order_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "p2c_live_agent_cancel_failed payment_id=%s error=%s reason=%s details_status=%s details_method_id=%s raw_account_id=%s resolved_method_id=%s resolved_source=%s",
+                order_id,
+                type(exc).__name__,
+                str(exc),
+                details.status if details is not None else "",
+                _bool_flag(details.method_id) if details is not None else "n/a",
+                _bool_flag(_extract_method_id_from_raw(details.raw)) if details is not None else "n/a",
+                _bool_flag(resolved_method_id),
+                resolved_source,
+            )
+            raise
 
     async def _on_socket_message(self, message: str) -> None:
         if self._state.snapshot().mode == AgentMode.PAUSED:
@@ -229,22 +301,38 @@ class P2CLiveAgent:
         pause_generation: int,
     ) -> None:
         should_try = False
+        skip_reason = ""
+        skip_snapshot_mode = ""
+        skip_free_slots = 0
         async with self._lock:
             if pause_generation != self._pause_generation:
-                return
-            if event.socket_order_id in self._seen or event.socket_order_id in self._inflight:
-                return
-            snapshot = self._state.snapshot()
-            if snapshot.mode != AgentMode.WAITING:
-                return
-            if snapshot.free_slots <= 0:
-                return
-            if not self._state.amount_matches(event.in_amount):
-                self._seen.add(event.socket_order_id)
-                return
-            self._inflight.add(event.socket_order_id)
-            should_try = True
+                skip_reason = "stale_pause_generation"
+            elif event.socket_order_id in self._seen or event.socket_order_id in self._inflight:
+                skip_reason = "already_seen_or_inflight"
+            else:
+                snapshot = self._state.snapshot()
+                if snapshot.mode != AgentMode.WAITING:
+                    skip_reason = f"mode_{snapshot.mode.value}"
+                    skip_snapshot_mode = snapshot.mode.value
+                elif snapshot.free_slots <= 0:
+                    skip_reason = "no_free_slots"
+                    skip_free_slots = snapshot.free_slots
+                elif not self._state.amount_matches(event.in_amount):
+                    self._seen.add(event.socket_order_id)
+                    skip_reason = "amount_filtered"
+                else:
+                    self._inflight.add(event.socket_order_id)
+                    should_try = True
         if not should_try:
+            logger.info(
+                "p2c_live_agent_event_skipped socket_order_id=%s reason=%s amount=%s currency=%s mode=%s free_slots=%d",
+                event.socket_order_id,
+                skip_reason,
+                event.in_amount,
+                event.in_asset,
+                skip_snapshot_mode,
+                skip_free_slots,
+            )
             return
         try:
             await self._claim_and_publish(event, received_at, pause_generation)
@@ -267,13 +355,21 @@ class P2CLiveAgent:
         received_at: float,
         pause_generation: int,
     ) -> None:
-        session = await self._session_repository.current()
+        session = await self._get_session()
         if session is None:
+            logger.info(
+                "p2c_live_agent_claim_skipped_no_session socket_order_id=%s",
+                event.socket_order_id,
+            )
             return
         take_started: float | None = None
         payment_id: int | None = None
         try:
             if pause_generation != self._pause_generation:
+                logger.info(
+                    "p2c_live_agent_claim_skipped_stale_generation socket_order_id=%s",
+                    event.socket_order_id,
+                )
                 return
             if self._state.snapshot().mode == AgentMode.PAUSED:
                 logger.info(
@@ -483,7 +579,7 @@ class P2CLiveAgent:
         attempts = 3
         last_error: Exception | None = None
         for _attempt in range(attempts):
-            session = await self._session_repository.current()
+            session = await self._get_session(force_refresh=_attempt > 0)
             if session is None:
                 raise P2CPaymentsError("Platform session is missing")
             try:
@@ -501,6 +597,24 @@ class P2CLiveAgent:
             raise P2CPaymentsError(f"Cannot confirm owned payment: {type(last_error).__name__}")
         raise P2CPaymentsError("Cannot confirm owned payment")
 
+    async def _get_session(self, *, force_refresh: bool = False) -> PlatformSession | None:
+        now = time.monotonic()
+        if (
+            not force_refresh
+            and self._session_l1_cache is not None
+            and (now - self._session_l1_cached_at_monotonic) <= self._session_l1_ttl_seconds
+            and self._session_l1_cache.cookie_header
+        ):
+            return self._session_l1_cache
+        session = await self._session_repository.current()
+        if session is not None and session.cookie_header:
+            self._session_l1_cache = session
+            self._session_l1_cached_at_monotonic = now
+            return session
+        self._session_l1_cache = None
+        self._session_l1_cached_at_monotonic = 0.0
+        return None
+
     @staticmethod
     def _log_process_event_task_result(task: asyncio.Task[None]) -> None:
         if task.cancelled():
@@ -512,6 +626,80 @@ class P2CLiveAgent:
                 type(exc).__name__,
                 exc_info=exc,
             )
+
+    async def _resolve_method_id(
+        self,
+        *,
+        order: ActiveOrder,
+        details: P2CPaymentDetails,
+        session,
+    ) -> tuple[str, str]:
+        if order.method_id:
+            logger.info(
+                "p2c_live_agent_method_source payment_id=%s source=order",
+                order.id,
+            )
+            return order.method_id, "order"
+        if details.method_id:
+            logger.info(
+                "p2c_live_agent_method_source payment_id=%s source=details",
+                order.id,
+            )
+            return details.method_id, "details"
+        from_raw = _extract_method_id_from_raw(details.raw)
+        if from_raw:
+            logger.info(
+                "p2c_live_agent_method_source payment_id=%s source=raw_account",
+                order.id,
+            )
+            return from_raw, "raw_account"
+        if self._cached_account_method_id:
+            logger.info(
+                "p2c_live_agent_method_source payment_id=%s source=accounts_cache",
+                order.id,
+            )
+            return self._cached_account_method_id, "accounts_cache"
+        try:
+            accounts = await self._payments_client.list_accounts(session=session)
+        except Exception as exc:
+            logger.warning("p2c_live_agent_accounts_fetch_failed error=%s", type(exc).__name__)
+            return "", "none"
+        logger.info(
+            "p2c_live_agent_accounts_fetched payment_id=%s total=%d",
+            order.id,
+            len(accounts),
+        )
+        active_ids = []
+        all_ids = []
+        for account in accounts:
+            account_id = account.get("id")
+            if isinstance(account_id, int):
+                account_id = str(account_id)
+            if not isinstance(account_id, str) or not account_id:
+                continue
+            all_ids.append(account_id)
+            status = str(account.get("status", "")).lower()
+            if status == "active":
+                active_ids.append(account_id)
+        if active_ids:
+            self._cached_account_method_id = active_ids[0]
+            logger.info(
+                "p2c_live_agent_method_source payment_id=%s source=accounts_active",
+                order.id,
+            )
+            return active_ids[0], "accounts_active"
+        if all_ids:
+            self._cached_account_method_id = all_ids[0]
+            logger.info(
+                "p2c_live_agent_method_source payment_id=%s source=accounts_any",
+                order.id,
+            )
+            return all_ids[0], "accounts_any"
+        logger.warning(
+            "p2c_live_agent_method_source_missing payment_id=%s",
+            order.id,
+        )
+        return "", "none"
 
 
 def _short(value: str, limit: int = 24) -> str:
@@ -525,3 +713,18 @@ def _url_host(url: str) -> str:
         return urlparse(url).netloc
     except Exception:
         return ""
+
+
+def _extract_method_id_from_raw(raw: dict[str, object]) -> str:
+    account = raw.get("account")
+    if isinstance(account, dict):
+        value = account.get("id")
+        if isinstance(value, str):
+            return value
+        if isinstance(value, int):
+            return str(value)
+    return ""
+
+
+def _bool_flag(value: str) -> str:
+    return "yes" if bool(value) else "no"

@@ -21,6 +21,7 @@ class FakePaymentsClient:
         self.take_calls: list[str] = []
         self.complete_calls: list[tuple[int, str]] = []
         self.cancel_calls: list[tuple[int, str]] = []
+        self.list_accounts_calls = 0
         self.payment_method_id = "method-1"
         self.payment_status = "processing"
         self.complete_delay_seconds = 0.0
@@ -47,7 +48,7 @@ class FakePaymentsClient:
             url="https://multiqr.test",
             payload="trx-123",
             method_id=self.payment_method_id,
-            raw={"id": payment_id},
+            raw={"id": payment_id, "account": {"id": self.payment_method_id}},
         )
 
     async def complete(self, *, payment_id: int, method_id: str, session: PlatformSession) -> None:
@@ -59,6 +60,21 @@ class FakePaymentsClient:
     async def cancel(self, *, payment_id: int, session: PlatformSession, method_id: str = "") -> None:
         del session
         self.cancel_calls.append((payment_id, method_id))
+
+    async def list_accounts(self, *, session: PlatformSession) -> list[dict[str, str]]:
+        del session
+        self.list_accounts_calls += 1
+        return [{"id": "69eb8d7e6bdfddede1de9a79", "status": "active"}]
+
+
+class CountingSessionRepository(InMemoryPlatformSessionRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.current_calls = 0
+
+    async def current(self) -> PlatformSession | None:
+        self.current_calls += 1
+        return await super().current()
 
 
 @pytest.mark.asyncio
@@ -273,6 +289,109 @@ async def test_complete_order_uses_method_from_details_when_missing_locally() ->
     await agent.complete_order("3566992")
 
     assert fake.complete_calls == [(3566992, "method-from-details")]
+    assert state.snapshot().active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_complete_order_falls_back_to_raw_account_id_when_method_missing() -> None:
+    state = InMemoryAgentState()
+    state.upsert_active_order(
+        ActiveOrder(
+            id="3566992",
+            amount="97",
+            currency="RUB",
+            direction="P2C",
+            method_id="",
+        )
+    )
+    repository = InMemoryPlatformSessionRepository()
+    await repository.save(
+        PlatformSession(access_token="token", cf_bm="cf", updated_at=datetime.now(UTC))
+    )
+    agent = P2CLiveAgent(
+        settings=make_settings(),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, []),
+    )
+    fake = FakePaymentsClient()
+    fake.payment_method_id = ""
+
+    async def get_payment_raw_account(*, payment_id: int, session: PlatformSession) -> P2CPaymentDetails:
+        del session
+        return P2CPaymentDetails(
+            id=payment_id,
+            status="processing",
+            in_amount="97",
+            in_asset="RUB",
+            out_amount="1",
+            out_asset="USDT",
+            brand_name="Shop",
+            provider="platiqr",
+            url="https://multiqr.test",
+            payload="trx-123",
+            method_id="",
+            raw={"id": payment_id, "account": {"id": "69eb8d7e6bdfddede1de9a79"}},
+        )
+
+    fake.get_payment = get_payment_raw_account  # type: ignore[method-assign]
+    agent._payments_client = fake  # type: ignore[assignment]
+
+    await agent.complete_order("3566992")
+
+    assert fake.complete_calls == [(3566992, "69eb8d7e6bdfddede1de9a79")]
+    assert state.snapshot().active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_complete_order_falls_back_to_accounts_when_everything_missing() -> None:
+    state = InMemoryAgentState()
+    state.upsert_active_order(
+        ActiveOrder(
+            id="3566992",
+            amount="97",
+            currency="RUB",
+            direction="P2C",
+            method_id="",
+        )
+    )
+    repository = InMemoryPlatformSessionRepository()
+    await repository.save(
+        PlatformSession(access_token="token", cf_bm="cf", updated_at=datetime.now(UTC))
+    )
+    agent = P2CLiveAgent(
+        settings=make_settings(),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, []),
+    )
+    fake = FakePaymentsClient()
+    fake.payment_method_id = ""
+
+    async def get_payment_empty(*, payment_id: int, session: PlatformSession) -> P2CPaymentDetails:
+        del session
+        return P2CPaymentDetails(
+            id=payment_id,
+            status="processing",
+            in_amount="97",
+            in_asset="RUB",
+            out_amount="1",
+            out_asset="USDT",
+            brand_name="Shop",
+            provider="platiqr",
+            url="https://multiqr.test",
+            payload="trx-123",
+            method_id="",
+            raw={"id": payment_id, "account": {}},
+        )
+
+    fake.get_payment = get_payment_empty  # type: ignore[method-assign]
+    agent._payments_client = fake  # type: ignore[assignment]
+
+    await agent.complete_order("3566992")
+
+    assert fake.complete_calls == [(3566992, "69eb8d7e6bdfddede1de9a79")]
+    assert fake.list_accounts_calls == 1
     assert state.snapshot().active_count == 0
 
 
@@ -536,3 +655,52 @@ def make_settings() -> Settings:
             platform_claim_from_snapshot=False,
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_live_agent_l1_session_cache_reduces_repository_reads() -> None:
+    state = InMemoryAgentState()
+    repository = CountingSessionRepository()
+    await repository.save(
+        PlatformSession(
+            access_token="token",
+            cf_bm="cf",
+            updated_at=datetime.now(UTC),
+        )
+    )
+    agent = P2CLiveAgent(
+        settings=make_settings(),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, []),
+    )
+
+    first = await agent._get_session()
+    second = await agent._get_session()
+
+    assert first is not None
+    assert second is not None
+    assert repository.current_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_live_agent_uses_session_hint_without_repository_read() -> None:
+    state = InMemoryAgentState()
+    repository = CountingSessionRepository()
+    agent = P2CLiveAgent(
+        settings=make_settings(),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, []),
+    )
+    session = PlatformSession(
+        access_token="token",
+        cf_bm="cf",
+        updated_at=datetime.now(UTC),
+    )
+    agent.set_session_hint(session)
+
+    loaded = await agent._get_session()
+
+    assert loaded == session
+    assert repository.current_calls == 0

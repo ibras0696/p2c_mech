@@ -33,6 +33,12 @@ async def main() -> None:
     session_repository = build_platform_session_repository(
         database_url=settings.database_url,
         encryption_key=settings.session_encryption_key,
+        redis_host=settings.redis_host,
+        redis_port=settings.redis_port,
+        redis_db=settings.redis_db,
+        redis_password=settings.redis_password,
+        redis_url=settings.redis_url,
+        session_cache_ttl_seconds=settings.session_cache_ttl_seconds,
     )
     preferences_repository = build_agent_preferences_repository(database_url=settings.database_url)
     active_order_repository = build_active_order_repository(database_url=settings.database_url)

@@ -13,11 +13,35 @@ def callback_data(callback: CallbackQuery) -> str:
 async def edit_text(
     callback: CallbackQuery,
     text: str,
-    reply_markup: InlineKeyboardMarkup,
+    reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
-    if isinstance(callback.message, Message):
-        try:
-            await callback.message.edit_text(text, reply_markup=reply_markup)
-        except TelegramBadRequest as exc:
-            if "message is not modified" not in str(exc).lower():
-                raise
+    message = callback.message
+    if message is None:
+        return
+    try:
+        await message.edit_text(text, reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        error_text = str(exc).lower()
+        if "message is not modified" in error_text:
+            return
+        if "there is no text in the message to edit" not in error_text:
+            raise
+        await _edit_caption_or_send_new(message, text=text, reply_markup=reply_markup)
+
+
+async def _edit_caption_or_send_new(
+    message: Message,
+    *,
+    text: str,
+    reply_markup: InlineKeyboardMarkup | None,
+) -> None:
+    try:
+        await message.edit_caption(caption=text, reply_markup=reply_markup)
+    except TelegramBadRequest as exc:
+        error_text = str(exc).lower()
+        if "message is not modified" in error_text:
+            return
+        if "there is no caption in the message to edit" in error_text:
+            await message.answer(text, reply_markup=reply_markup)
+            return
+        raise

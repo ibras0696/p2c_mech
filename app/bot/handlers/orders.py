@@ -40,21 +40,13 @@ def build_orders_router(allowed_user_ids: set[int], live_agent: P2CLiveAgent) ->
             message = str(exc)
             if "Order is not active" in message:
                 await callback.answer("Заявка уже закрыта или не активна")
-                if callback.message is not None:
-                    try:
-                        await callback.message.edit_text(f"✅ Заявка {order_id} уже закрыта.")
-                    except Exception:
-                        pass
+                await edit_text(callback, f"✅ Заявка {order_id} уже закрыта.")
                 return
             await callback.answer(f"Не удалось завершить заявку: {message}", show_alert=True)
             return
 
         await callback.answer("Оплата подтверждена")
-        if callback.message is not None:
-            try:
-                await callback.message.edit_text(f"✅ Заявка {order_id} закрыта как оплаченная.")
-            except Exception:
-                pass
+        await edit_text(callback, f"✅ Заявка {order_id} закрыта как оплаченная.")
 
     @router.callback_query(F.data.startswith("order:cancel:"))
     async def callback_cancel(callback: CallbackQuery) -> None:
@@ -69,11 +61,7 @@ def build_orders_router(allowed_user_ids: set[int], live_agent: P2CLiveAgent) ->
             return
 
         await callback.answer("Заявка отменена")
-        if callback.message is not None:
-            try:
-                await callback.message.edit_text(f"🛑 Заявка {order_id} отменена.")
-            except Exception:
-                pass
+        await edit_text(callback, f"🛑 Заявка {order_id} отменена.")
 
     @router.callback_query(F.data.startswith("order:confirm:"))
     async def callback_confirm_paid(callback: CallbackQuery) -> None:

@@ -45,6 +45,12 @@ def build_actions_router(
             logger.info("bot_action_run_blocked user_id=%s reason=%s", callback.from_user.id, validation_error)
             await callback.answer(validation_error, show_alert=True)
             return
+        await refresh_session_cache_for_run(
+            user_id=callback.from_user.id,
+            platform_session_repository=platform_session_repository,
+            session=session,
+        )
+        live_agent.set_session_hint(session)
         live_agent.on_run()
         snapshot = agent_state.run()
         logger.info(
@@ -88,3 +94,21 @@ def validate_session_for_run(session: PlatformSession | None) -> str | None:
     if datetime.now(UTC) - session.updated_at > SESSION_MAX_AGE:
         return "Сессия устарела. Пришли socket cURL заново."
     return None
+
+
+async def refresh_session_cache_for_run(
+    *,
+    user_id: int,
+    platform_session_repository: PlatformSessionRepository,
+    session: PlatformSession,
+) -> None:
+    try:
+        await platform_session_repository.save(session)
+    except Exception as exc:
+        logger.warning(
+            "bot_action_run_session_cache_refresh_failed user_id=%s error=%s",
+            user_id,
+            type(exc).__name__,
+        )
+        return
+    logger.info("bot_action_run_session_cache_refreshed user_id=%s", user_id)

@@ -106,11 +106,12 @@ class P2CPaymentsClient:
     ) -> None:
         if not method_id:
             raise P2CPaymentsError("method_id is required to complete payment")
-        await self._request_json(
+        await self._request(
             method="POST",
             path=f"/internal/v1/p2c/payments/{payment_id}/complete",
             session=session,
             json_body={"method": method_id},
+            expect_json=False,
         )
 
     async def cancel(
@@ -132,11 +133,12 @@ class P2CPaymentsClient:
         for path in path_variants:
             for body in body_variants:
                 try:
-                    await self._request_json(
+                    await self._request(
                         method="POST",
                         path=path,
                         session=session,
                         json_body=body,
+                        expect_json=False,
                     )
                 except P2CPaymentsError as exc:
                     last_error = exc
@@ -155,6 +157,17 @@ class P2CPaymentsClient:
             raise P2CPaymentsError(f"Cancel failed for payment {payment_id}: {last_error}") from last_error
         raise P2CPaymentsError(f"Cancel failed for payment {payment_id}")
 
+    async def list_accounts(self, *, session: PlatformSession) -> list[dict[str, Any]]:
+        payload = await self._request_json(
+            method="GET",
+            path="/internal/v1/p2c/accounts",
+            session=session,
+        )
+        data = payload.get("data")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
     async def _request_json(
         self,
         *,
@@ -163,6 +176,26 @@ class P2CPaymentsClient:
         session: PlatformSession,
         json_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        body = await self._request(
+            method=method,
+            path=path,
+            session=session,
+            json_body=json_body,
+            expect_json=True,
+        )
+        if not isinstance(body, dict):
+            raise P2CPaymentsError(f"{method} {path} returned unexpected payload")
+        return body
+
+    async def _request(
+        self,
+        *,
+        method: str,
+        path: str,
+        session: PlatformSession,
+        json_body: dict[str, Any] | None = None,
+        expect_json: bool,
+    ) -> dict[str, Any] | None:
         if not session.cookie_header:
             raise P2CPaymentsError("Platform session cookie is missing")
         headers = {
@@ -184,13 +217,13 @@ class P2CPaymentsClient:
             raise P2CPaymentsError(
                 f"{method} {path} failed with status {response.status_code}: {response.text[:300]}"
             )
+        if not expect_json:
+            return None
         try:
             body: Any = response.json()
         except ValueError as exc:
             raise P2CPaymentsError(f"{method} {path} returned non-JSON body") from exc
-        if not isinstance(body, dict):
-            raise P2CPaymentsError(f"{method} {path} returned unexpected payload")
-        return body
+        return body if isinstance(body, dict) else None
 
 
 def extract_payment_id(payload: dict[str, Any]) -> int | None:
@@ -210,7 +243,13 @@ def extract_payment_id(payload: dict[str, Any]) -> int | None:
 
 
 def extract_method_id(data: dict[str, Any]) -> str:
-    direct_keys = ("method", "method_id", "payment_method_id", "account_method_id")
+    direct_keys = (
+        "method",
+        "method_id",
+        "payment_method_id",
+        "account_method_id",
+        "account_id",
+    )
     for key in direct_keys:
         value = data.get(key)
         if isinstance(value, str):
@@ -221,6 +260,14 @@ def extract_method_id(data: dict[str, Any]) -> str:
     if isinstance(nested_method, dict):
         for key in ("id", "method_id", "payment_method_id"):
             value = nested_method.get(key)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, int):
+                return str(value)
+    nested_account = data.get("account")
+    if isinstance(nested_account, dict):
+        for key in ("id", "account_id", "method_id"):
+            value = nested_account.get(key)
             if isinstance(value, str):
                 return value
             if isinstance(value, int):
