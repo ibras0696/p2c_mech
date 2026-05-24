@@ -18,6 +18,7 @@ research/ignored/
 research/traces/
 research/screenshots/
 research/storage-state/
+research/runtime/
 *.har
 *.trace.zip
 storage-state.json
