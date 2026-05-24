@@ -1,0 +1,14 @@
+# <type>(<scope>): <subject>
+#
+# type: feat | fix | refactor | perf | test | docs | chore | ci | build
+# scope: bot | agent | api | ws | db | infra | docs | tests
+# subject: коротко, в повелительной форме, без точки в конце
+#
+# Body (optional):
+# - что изменено
+# - почему изменено
+# - риски/ограничения
+#
+# Footer (optional):
+# - BREAKING CHANGE: ...
+# - Refs: #issue

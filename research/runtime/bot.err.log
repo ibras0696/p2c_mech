@@ -1,0 +1,11 @@
+2026-05-24 19:58:47,913 WARNING __main__ agent_preferences_load_failed error=ConnectionRefusedError
+2026-05-24 19:58:48,202 INFO __main__ bot_started
+2026-05-24 19:58:48,239 INFO aiogram.dispatcher Start polling
+2026-05-24 19:58:48,476 INFO aiogram.dispatcher Run polling for bot @my_test_mymymy_bot id=8150256478 - 'КиноБот'
+2026-05-24 20:00:21,929 INFO aiogram.event Update id=430065781 is handled. Duration 307 ms by bot id=8150256478
+2026-05-24 20:00:23,637 INFO aiogram.event Update id=430065782 is handled. Duration 271 ms by bot id=8150256478
+2026-05-24 20:03:35,176 ERROR aiogram.dispatcher Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientOSError: [WinError 1236] Подключение к сети было разорвано локальной системой
+2026-05-24 20:03:35,208 WARNING aiogram.dispatcher Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = 8150256478)
+2026-05-24 20:03:37,225 ERROR aiogram.dispatcher Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [Подключение к сети было разорвано локальной системой]
+2026-05-24 20:03:37,257 WARNING aiogram.dispatcher Sleep for 1.391930 seconds and try again... (tryings = 1, bot id = 8150256478)
+2026-05-24 20:03:48,991 INFO aiogram.dispatcher Connection established (tryings = 2, bot id = 8150256478)

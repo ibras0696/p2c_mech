@@ -1,0 +1,77 @@
+services:
+  app:
+    build:
+      context: .
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agent_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-agent_db}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  bot:
+    build:
+      context: .
+    command: python -m app.bot.runner
+    volumes:
+      - ./app:/app/app
+      - ./docs:/app/docs
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agent_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-agent_db}
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  browser-worker:
+    build:
+      context: .
+    command: python -m app.workers.browser
+    env_file:
+      - .env
+    depends_on:
+      - app
+      - redis
+    restart: unless-stopped
+    profiles:
+      - browser
+
+  p2c-socket-worker:
+    build:
+      context: .
+    command: python -m app.workers.p2c_socket
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agent_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-agent_db}
+    depends_on:
+      - redis
+    restart: unless-stopped
+    profiles:
+      - socket
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-agent_db}
+      POSTGRES_USER: ${POSTGRES_USER:-agent_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
