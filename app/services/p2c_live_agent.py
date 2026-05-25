@@ -79,6 +79,16 @@ class P2CLiveAgent:
     def on_run(self) -> None:
         return
 
+    async def prewarm_take_channels(self, session: PlatformSession) -> None:
+        burst_raw = getattr(self._settings, "platform_take_burst_size", 1)
+        burst = max(1, min(int(burst_raw), 3))
+        try:
+            await self._payments_client.prewarm_take_clients(session=session, channels=burst)
+        except Exception as exc:
+            logger.warning("p2c_live_agent_prewarm_failed error=%s", type(exc).__name__)
+            return
+        logger.info("p2c_live_agent_prewarm_succeeded channels=%d", burst)
+
     def set_session_hint(self, session: PlatformSession) -> None:
         self._session_l1_cache = session
         self._session_l1_cached_at_monotonic = time.monotonic()
@@ -377,20 +387,8 @@ class P2CLiveAgent:
                     event.socket_order_id,
                 )
                 return
-            logger.info(
-                "p2c_live_agent_claim_started socket_order_id=%s amount=%s currency=%s provider=%s",
-                event.socket_order_id,
-                event.in_amount,
-                event.in_asset,
-                event.provider,
-            )
             detect_to_take_start_ms = int((time.perf_counter() - received_at) * 1000)
             take_started = time.perf_counter()
-            logger.info(
-                "p2c_live_agent_take_start socket_order_id=%s detect_to_take_start_ms=%d",
-                event.socket_order_id,
-                detect_to_take_start_ms,
-            )
             payment_id = await self._take_payment_id(
                 socket_order_id=event.socket_order_id,
                 session=session,
@@ -398,9 +396,10 @@ class P2CLiveAgent:
             take_ms = int((time.perf_counter() - take_started) * 1000)
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
             logger.info(
-                "p2c_live_agent_take_result socket_order_id=%s payment_id=%s take_http_ms=%d total_from_detect_ms=%d",
+                "p2c_live_agent_take_result socket_order_id=%s payment_id=%s detect_to_take_start_ms=%d take_http_ms=%d total_from_detect_ms=%d",
                 event.socket_order_id,
                 payment_id,
+                detect_to_take_start_ms,
                 take_ms,
                 total_from_detect_ms,
             )
@@ -425,12 +424,13 @@ class P2CLiveAgent:
         except P2CPaymentsError as exc:
             reason = "lost_race" if "InvalidStatus" in str(exc) else "api_error"
             logger.info(
-                "p2c_live_agent_claim_failed socket_order_id=%s amount=%s currency=%s provider=%s brand=%s take_http_ms=%s total_from_detect_ms=%d reason=%s error=%s",
+                "p2c_live_agent_claim_failed socket_order_id=%s amount=%s currency=%s provider=%s brand=%s detect_to_take_start_ms=%d take_http_ms=%s total_from_detect_ms=%d reason=%s error=%s",
                 event.socket_order_id,
                 event.in_amount,
                 event.in_asset,
                 event.provider,
                 event.brand_name,
+                detect_to_take_start_ms,
                 int((time.perf_counter() - take_started) * 1000) if take_started is not None else "n/a",
                 int((time.perf_counter() - received_at) * 1000),
                 reason,
@@ -620,11 +620,12 @@ class P2CLiveAgent:
         session: PlatformSession,
     ) -> int:
         burst_raw = getattr(self._settings, "platform_take_burst_size", 1)
-        burst = max(1, min(int(burst_raw), 2))
+        burst = max(1, min(int(burst_raw), 3))
         if burst == 1:
             return await self._payments_client.take(
                 socket_order_id=socket_order_id,
                 session=session,
+                client_slot=0,
             )
         logger.info(
             "p2c_live_agent_take_burst_started socket_order_id=%s burst=%d",
@@ -633,7 +634,11 @@ class P2CLiveAgent:
         )
         tasks: dict[asyncio.Task[int], int] = {
             asyncio.create_task(
-                self._payments_client.take(socket_order_id=socket_order_id, session=session)
+                self._payments_client.take(
+                    socket_order_id=socket_order_id,
+                    session=session,
+                    client_slot=idx,
+                )
             ): idx
             for idx in range(burst)
         }

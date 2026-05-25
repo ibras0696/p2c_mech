@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
-
 from app.bot.session_state import PlatformSession
 from app.bot.state import ActiveOrder, AgentMode, InMemoryAgentState
 from app.core.config import Settings
@@ -23,8 +22,15 @@ class E2EFakePaymentsClient:
         self.complete_calls: list[tuple[int, str]] = []
         self.get_payment_error: Exception | None = None
 
-    async def take(self, *, socket_order_id: str, session: PlatformSession) -> int:
+    async def take(
+        self,
+        *,
+        socket_order_id: str,
+        session: PlatformSession,
+        client_slot: int | None = None,
+    ) -> int:
         del session
+        del client_slot
         self.take_calls.append(socket_order_id)
         return 7770001
 
@@ -50,6 +56,10 @@ class E2EFakePaymentsClient:
     async def complete(self, *, payment_id: int, method_id: str, session: PlatformSession) -> None:
         del session
         self.complete_calls.append((payment_id, method_id))
+
+    async def prewarm_take_clients(self, *, session: PlatformSession, channels: int = 3) -> None:
+        del session
+        del channels
 
 
 @pytest.mark.asyncio

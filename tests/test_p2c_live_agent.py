@@ -28,8 +28,15 @@ class FakePaymentsClient:
         self.complete_delay_seconds = 0.0
         self.get_payment_error: Exception | None = None
 
-    async def take(self, *, socket_order_id: str, session: PlatformSession) -> int:
+    async def take(
+        self,
+        *,
+        socket_order_id: str,
+        session: PlatformSession,
+        client_slot: int | None = None,
+    ) -> int:
         del session
+        del client_slot
         self.take_calls.append(socket_order_id)
         index = len(self.take_calls) - 1
         if index < len(self.take_side_effects):
@@ -74,6 +81,10 @@ class FakePaymentsClient:
         del session
         self.list_accounts_calls += 1
         return [{"id": "69eb8d7e6bdfddede1de9a79", "status": "active"}]
+
+    async def prewarm_take_clients(self, *, session: PlatformSession, channels: int = 3) -> None:
+        del session
+        del channels
 
 
 class CountingSessionRepository(InMemoryPlatformSessionRepository):
@@ -769,3 +780,59 @@ async def test_live_agent_take_burst_uses_second_success_when_first_fails() -> N
     assert len(fake.take_calls) == 2
     assert snapshot.active_count == 1
     assert snapshot.active_orders[0].id == "3567999"
+
+
+@pytest.mark.asyncio
+async def test_live_agent_take_burst_caps_to_three_attempts() -> None:
+    state = InMemoryAgentState()
+    state.run()
+    repository = InMemoryPlatformSessionRepository()
+    await repository.save(
+        PlatformSession(
+            access_token="token",
+            cf_bm="cf",
+            updated_at=datetime.now(UTC),
+        )
+    )
+    notifications: list[ActiveOrder] = []
+    agent = P2CLiveAgent(
+        settings=cast(
+            Settings,
+            SimpleNamespace(
+                platform_base_url="https://app.send.tg",
+                platform_ws_url="wss://app.send.tg/internal/v1/p2c-socket/?EIO=4&transport=websocket",
+                platform_claim_from_snapshot=False,
+                platform_take_burst_size=10,
+            ),
+        ),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, notifications),
+    )
+    fake = FakePaymentsClient()
+    fake.take_side_effects = [
+        (0.05, P2CPaymentsError("first failed")),
+        (0.04, P2CPaymentsError("second failed")),
+        (0.01, 3577001),
+    ]
+    agent._payments_client = fake  # type: ignore[assignment]
+
+    await agent._process_event(
+        P2COrderEvent(
+            socket_order_id="burst-3",
+            in_amount=state.snapshot().min_amount + 1,
+            in_asset="RUB",
+            out_asset="USDT",
+            url="https://multiqr.test",
+            payload="trx-333",
+            brand_name="Shop",
+            provider="platiqr",
+        ),
+        0.0,
+        agent._pause_generation,  # type: ignore[attr-defined]
+    )
+
+    snapshot = state.snapshot()
+    assert len(fake.take_calls) == 3
+    assert snapshot.active_count == 1
+    assert snapshot.active_orders[0].id == "3577001"

@@ -51,6 +51,7 @@ def build_actions_router(
             session=session,
         )
         live_agent.set_session_hint(session)
+        await live_agent.prewarm_take_channels(session)
         live_agent.on_run()
         snapshot = agent_state.run()
         logger.info(
