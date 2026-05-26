@@ -27,6 +27,7 @@ async def main() -> None:
         P2CSocketConfig(
             url=settings.platform_ws_url,
             cookie_header=cookie_header,
+            force_ipv4=settings.platform_force_ipv4,
         ),
         on_message=log_business_message,
     )

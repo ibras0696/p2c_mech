@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
@@ -27,6 +28,7 @@ LIST_INITIALIZE_PACKET = '42["list:initialize"]'
 class P2CSocketConfig:
     url: str
     cookie_header: str
+    force_ipv4: bool = True
     origin: str = "https://app.send.tg"
     user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -106,6 +108,9 @@ class P2CSocketClient:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Cookie": self._config.cookie_header,
         }
+        connect_kwargs: dict[str, Any] = {}
+        if self._config.force_ipv4:
+            connect_kwargs["family"] = socket.AF_INET
         async with websockets.connect(
             self._config.url,
             origin=cast(Any, self._config.origin),
@@ -114,6 +119,7 @@ class P2CSocketClient:
             open_timeout=self._config.open_timeout_seconds,
             ping_interval=None,
             proxy=None,
+            **connect_kwargs,
         ) as websocket:
             open_packet = await asyncio.wait_for(websocket.recv(), timeout=10)
             if not isinstance(open_packet, str) or not open_packet.startswith(ENGINE_OPEN):
@@ -130,6 +136,9 @@ class P2CSocketClient:
             "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
             "Cookie": self._config.cookie_header,
         }
+        connect_kwargs: dict[str, Any] = {}
+        if self._config.force_ipv4:
+            connect_kwargs["family"] = socket.AF_INET
 
         logger.info("p2c_socket_connecting")
         async with websockets.connect(
@@ -140,6 +149,7 @@ class P2CSocketClient:
             open_timeout=self._config.open_timeout_seconds,
             ping_interval=None,
             proxy=None,
+            **connect_kwargs,
         ) as websocket:
             logger.info("p2c_socket_connected")
             namespace_connected = False
@@ -210,7 +220,15 @@ class P2CSocketClient:
     def _log_packet_received(self, message: str) -> None:
         prefix = message[:2]
         event = _extract_socket_event_name(message)
-        logger.info(
+        if event == "list:update":
+            logger.info(
+                "p2c_socket_packet_received prefix=%s len=%d event=%s",
+                prefix,
+                len(message),
+                event,
+            )
+            return
+        logger.debug(
             "p2c_socket_packet_received prefix=%s len=%d event=%s",
             prefix,
             len(message),

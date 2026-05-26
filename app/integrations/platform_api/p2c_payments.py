@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,30 +44,36 @@ class P2CPaymentsClient:
         ]
 
     def _build_client(self) -> httpx.AsyncClient:
+        http2_enabled = _is_http2_supported()
         try:
-            return httpx.AsyncClient(
-                timeout=self._timeout,
-                follow_redirects=False,
-                http2=True,
-                trust_env=False,
-                limits=httpx.Limits(
-                    max_keepalive_connections=20,
-                    max_connections=100,
-                    keepalive_expiry=30.0,
-                ),
+            transport = httpx.AsyncHTTPTransport(
+                retries=0,
+                http2=http2_enabled,
+                local_address="0.0.0.0",
+                socket_options=[
+                    (socket.IPPROTO_TCP, socket.TCP_NODELAY, 1),
+                    (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+                ],
             )
-        except ImportError:
-            return httpx.AsyncClient(
-                timeout=self._timeout,
-                follow_redirects=False,
+        except TypeError:
+            transport = httpx.AsyncHTTPTransport(
+                retries=0,
                 http2=False,
-                trust_env=False,
-                limits=httpx.Limits(
-                    max_keepalive_connections=20,
-                    max_connections=100,
-                    keepalive_expiry=30.0,
-                ),
+                local_address="0.0.0.0",
             )
+            http2_enabled = False
+        return httpx.AsyncClient(
+            timeout=self._timeout,
+            follow_redirects=False,
+            http2=http2_enabled,
+            trust_env=False,
+            transport=transport,
+            limits=httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=30.0,
+            ),
+        )
 
     async def aclose(self) -> None:
         for take_client in self._take_clients:
@@ -342,3 +349,11 @@ def to_int(value: Any, field_name: str) -> int:
     if isinstance(value, str) and value.isdigit():
         return int(value)
     raise P2CPaymentsError(f"Payment details has invalid {field_name}")
+
+
+def _is_http2_supported() -> bool:
+    try:
+        import h2  # noqa: F401
+    except ImportError:
+        return False
+    return True

@@ -12,6 +12,8 @@ services:
     depends_on:
       - postgres
       - redis
+    networks:
+      - appnet
     restart: unless-stopped
 
   bot:
@@ -28,6 +30,8 @@ services:
     depends_on:
       - postgres
       - redis
+    networks:
+      - appnet
     restart: unless-stopped
 
   browser-worker:
@@ -39,6 +43,8 @@ services:
     depends_on:
       - app
       - redis
+    networks:
+      - appnet
     restart: unless-stopped
     profiles:
       - browser
@@ -53,6 +59,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-agent_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-agent_db}
     depends_on:
       - redis
+    networks:
+      - appnet
     restart: unless-stopped
     profiles:
       - socket
@@ -67,11 +75,20 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    networks:
+      - appnet
     restart: unless-stopped
 
   redis:
     image: redis:7
+    networks:
+      - appnet
     restart: unless-stopped
 
 volumes:
   postgres_data:
+
+networks:
+  appnet:
+    driver: bridge
+    enable_ipv6: false

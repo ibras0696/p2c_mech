@@ -104,6 +104,7 @@ def build_session_router(
             P2CSocketConfig(
                 url=settings.platform_ws_url,
                 cookie_header=session.cookie_header,
+                force_ipv4=settings.platform_force_ipv4,
             )
         )
         try:

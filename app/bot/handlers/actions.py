@@ -51,7 +51,16 @@ def build_actions_router(
             session=session,
         )
         live_agent.set_session_hint(session)
-        await live_agent.prewarm_take_channels(session)
+        try:
+            await live_agent.prewarm_take_channels(session)
+        except Exception as exc:
+            logger.info(
+                "bot_action_run_blocked_on_prewarm user_id=%s error=%s",
+                callback.from_user.id,
+                type(exc).__name__,
+            )
+            await callback.answer(str(exc), show_alert=True)
+            return
         live_agent.on_run()
         snapshot = agent_state.run()
         logger.info(

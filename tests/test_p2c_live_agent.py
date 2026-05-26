@@ -27,6 +27,7 @@ class FakePaymentsClient:
         self.payment_status = "processing"
         self.complete_delay_seconds = 0.0
         self.get_payment_error: Exception | None = None
+        self.prewarm_error: Exception | None = None
 
     async def take(
         self,
@@ -85,6 +86,8 @@ class FakePaymentsClient:
     async def prewarm_take_clients(self, *, session: PlatformSession, channels: int = 3) -> None:
         del session
         del channels
+        if self.prewarm_error is not None:
+            raise self.prewarm_error
 
 
 class CountingSessionRepository(InMemoryPlatformSessionRepository):
@@ -728,7 +731,7 @@ async def test_live_agent_uses_session_hint_without_repository_read() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_agent_take_burst_uses_second_success_when_first_fails() -> None:
+async def test_live_agent_forces_single_take_attempt_even_when_burst_configured() -> None:
     state = InMemoryAgentState()
     state.run()
     repository = InMemoryPlatformSessionRepository()
@@ -747,7 +750,7 @@ async def test_live_agent_take_burst_uses_second_success_when_first_fails() -> N
                 platform_base_url="https://app.send.tg",
                 platform_ws_url="wss://app.send.tg/internal/v1/p2c-socket/?EIO=4&transport=websocket",
                 platform_claim_from_snapshot=False,
-                platform_take_burst_size=2,
+                platform_take_burst_size=3,
             ),
         ),
         state=state,
@@ -756,8 +759,8 @@ async def test_live_agent_take_burst_uses_second_success_when_first_fails() -> N
     )
     fake = FakePaymentsClient()
     fake.take_side_effects = [
-        (0.05, P2CPaymentsError("first failed")),
-        (0.01, 3567999),
+        (0.0, 3567999),
+        (0.0, P2CPaymentsError("must not be called")),
     ]
     agent._payments_client = fake  # type: ignore[assignment]
 
@@ -777,13 +780,13 @@ async def test_live_agent_take_burst_uses_second_success_when_first_fails() -> N
     )
 
     snapshot = state.snapshot()
-    assert len(fake.take_calls) == 2
+    assert len(fake.take_calls) == 1
     assert snapshot.active_count == 1
     assert snapshot.active_orders[0].id == "3567999"
 
 
 @pytest.mark.asyncio
-async def test_live_agent_take_burst_caps_to_three_attempts() -> None:
+async def test_live_agent_penalty_backoff_auto_resumes_waiting_mode() -> None:
     state = InMemoryAgentState()
     state.run()
     repository = InMemoryPlatformSessionRepository()
@@ -802,7 +805,7 @@ async def test_live_agent_take_burst_caps_to_three_attempts() -> None:
                 platform_base_url="https://app.send.tg",
                 platform_ws_url="wss://app.send.tg/internal/v1/p2c-socket/?EIO=4&transport=websocket",
                 platform_claim_from_snapshot=False,
-                platform_take_burst_size=10,
+                platform_take_burst_size=1,
             ),
         ),
         state=state,
@@ -811,20 +814,68 @@ async def test_live_agent_take_burst_caps_to_three_attempts() -> None:
     )
     fake = FakePaymentsClient()
     fake.take_side_effects = [
-        (0.05, P2CPaymentsError("first failed")),
-        (0.04, P2CPaymentsError("second failed")),
-        (0.01, 3577001),
+        (
+            0.0,
+            P2CPaymentsError(
+                'POST /internal/v1/p2c/payments/take/xyz failed with status 403: {"error":"MerchantPenalized","retry_after":0}'
+            ),
+        )
     ]
     agent._payments_client = fake  # type: ignore[assignment]
 
     await agent._process_event(
         P2COrderEvent(
-            socket_order_id="burst-3",
+            socket_order_id="penalty-resume",
             in_amount=state.snapshot().min_amount + 1,
             in_asset="RUB",
             out_asset="USDT",
             url="https://multiqr.test",
-            payload="trx-333",
+            payload="trx-penalty",
+            brand_name="Shop",
+            provider="platiqr",
+        ),
+        0.0,
+        agent._pause_generation,  # type: ignore[attr-defined]
+    )
+    await asyncio.sleep(0.05)
+
+    snapshot = state.snapshot()
+    assert len(fake.take_calls) == 1
+    assert snapshot.mode == AgentMode.WAITING
+    assert snapshot.active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_live_agent_pauses_when_take_returns_401() -> None:
+    state = InMemoryAgentState()
+    state.run()
+    repository = InMemoryPlatformSessionRepository()
+    await repository.save(
+        PlatformSession(
+            access_token="token",
+            cf_bm="cf",
+            updated_at=datetime.now(UTC),
+        )
+    )
+    notifications: list[ActiveOrder] = []
+    agent = P2CLiveAgent(
+        settings=make_settings(),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, notifications),
+    )
+    fake = FakePaymentsClient()
+    fake.take_side_effects = [(0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized"))]
+    agent._payments_client = fake  # type: ignore[assignment]
+
+    await agent._process_event(
+        P2COrderEvent(
+            socket_order_id="auth-401",
+            in_amount=state.snapshot().min_amount + 1,
+            in_asset="RUB",
+            out_asset="USDT",
+            url="https://multiqr.test",
+            payload="trx-auth",
             brand_name="Shop",
             provider="platiqr",
         ),
@@ -833,6 +884,25 @@ async def test_live_agent_take_burst_caps_to_three_attempts() -> None:
     )
 
     snapshot = state.snapshot()
-    assert len(fake.take_calls) == 3
-    assert snapshot.active_count == 1
-    assert snapshot.active_orders[0].id == "3577001"
+    assert snapshot.mode == AgentMode.PAUSED
+    assert snapshot.active_count == 0
+    assert notifications == []
+
+
+@pytest.mark.asyncio
+async def test_live_agent_prewarm_raises_on_unauthorized() -> None:
+    state = InMemoryAgentState()
+    repository = InMemoryPlatformSessionRepository()
+    agent = P2CLiveAgent(
+        settings=make_settings(),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, []),
+    )
+    fake = FakePaymentsClient()
+    fake.prewarm_error = P2CPaymentsError("GET /internal/v1/p2c/accounts failed with status 401: Unauthorized")
+    agent._payments_client = fake  # type: ignore[assignment]
+    session = PlatformSession(access_token="token", cf_bm="cf", updated_at=datetime.now(UTC))
+
+    with pytest.raises(P2CPaymentsError, match="unauthorized"):
+        await agent.prewarm_take_channels(session)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -65,29 +66,33 @@ class P2CLiveAgent:
         self._session_l1_cache: PlatformSession | None = None
         self._session_l1_cached_at_monotonic = 0.0
         self._session_l1_ttl_seconds = 2.0
+        self._penalty_resume_task: asyncio.Task[None] | None = None
+        self._penalty_events = 0
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._cancel_penalty_resume_task()
         if self._socket_client is not None:
             self._socket_client.stop()
 
     def on_pause(self) -> None:
-        self._pause_generation += 1
-        if self._socket_client is not None:
-            self._socket_client.stop()
+        self._cancel_penalty_resume_task()
+        self._increment_pause_generation_and_stop_socket()
 
     def on_run(self) -> None:
         return
 
     async def prewarm_take_channels(self, session: PlatformSession) -> None:
-        burst_raw = getattr(self._settings, "platform_take_burst_size", 1)
-        burst = max(1, min(int(burst_raw), 3))
         try:
-            await self._payments_client.prewarm_take_clients(session=session, channels=burst)
+            await self._payments_client.prewarm_take_clients(session=session, channels=1)
         except Exception as exc:
+            if self._is_auth_or_forbidden_error(exc):
+                raise P2CPaymentsError(
+                    "Platform session is unauthorized (401/403). Refresh session before run."
+                ) from exc
             logger.warning("p2c_live_agent_prewarm_failed error=%s", type(exc).__name__)
             return
-        logger.info("p2c_live_agent_prewarm_succeeded channels=%d", burst)
+        logger.info("p2c_live_agent_prewarm_succeeded channels=1")
 
     def set_session_hint(self, session: PlatformSession) -> None:
         self._session_l1_cache = session
@@ -114,6 +119,7 @@ class P2CLiveAgent:
                     P2CSocketConfig(
                         url=self._settings.platform_ws_url,
                         cookie_header=session.cookie_header,
+                        force_ipv4=self._settings.platform_force_ipv4,
                     ),
                     on_message=self._on_socket_message,
                 )
@@ -314,25 +320,30 @@ class P2CLiveAgent:
         skip_reason = ""
         skip_snapshot_mode = ""
         skip_free_slots = 0
-        async with self._lock:
-            if pause_generation != self._pause_generation:
-                skip_reason = "stale_pause_generation"
-            elif event.socket_order_id in self._seen or event.socket_order_id in self._inflight:
-                skip_reason = "already_seen_or_inflight"
+        if pause_generation != self._pause_generation:
+            skip_reason = "stale_pause_generation"
+        else:
+            snapshot = self._state.snapshot()
+            if snapshot.mode != AgentMode.WAITING:
+                skip_reason = f"mode_{snapshot.mode.value}"
+                skip_snapshot_mode = snapshot.mode.value
+            elif snapshot.free_slots <= 0:
+                skip_reason = "no_free_slots"
+                skip_free_slots = snapshot.free_slots
+            elif not self._state.amount_matches(event.in_amount):
+                skip_reason = "amount_filtered"
             else:
-                snapshot = self._state.snapshot()
-                if snapshot.mode != AgentMode.WAITING:
-                    skip_reason = f"mode_{snapshot.mode.value}"
-                    skip_snapshot_mode = snapshot.mode.value
-                elif snapshot.free_slots <= 0:
-                    skip_reason = "no_free_slots"
-                    skip_free_slots = snapshot.free_slots
-                elif not self._state.amount_matches(event.in_amount):
-                    self._seen.add(event.socket_order_id)
-                    skip_reason = "amount_filtered"
-                else:
-                    self._inflight.add(event.socket_order_id)
-                    should_try = True
+                async with self._lock:
+                    if pause_generation != self._pause_generation:
+                        skip_reason = "stale_pause_generation"
+                    elif event.socket_order_id in self._seen or event.socket_order_id in self._inflight:
+                        skip_reason = "already_seen_or_inflight"
+                    else:
+                        self._inflight.add(event.socket_order_id)
+                        should_try = True
+        if skip_reason == "amount_filtered":
+            async with self._lock:
+                self._seen.add(event.socket_order_id)
         if not should_try:
             logger.info(
                 "p2c_live_agent_event_skipped socket_order_id=%s reason=%s amount=%s currency=%s mode=%s free_slots=%d",
@@ -365,6 +376,15 @@ class P2CLiveAgent:
         received_at: float,
         pause_generation: int,
     ) -> None:
+        queue_wait_ms = int((time.perf_counter() - received_at) * 1000)
+        logger.info(
+            "p2c_live_agent_claim_started socket_order_id=%s amount=%s currency=%s provider=%s queue_wait_ms=%d",
+            event.socket_order_id,
+            event.in_amount,
+            event.in_asset,
+            event.provider,
+            queue_wait_ms,
+        )
         session = await self._get_session()
         if session is None:
             logger.info(
@@ -392,6 +412,7 @@ class P2CLiveAgent:
             payment_id = await self._take_payment_id(
                 socket_order_id=event.socket_order_id,
                 session=session,
+                received_at=received_at,
             )
             take_ms = int((time.perf_counter() - take_started) * 1000)
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
@@ -424,18 +445,33 @@ class P2CLiveAgent:
         except P2CPaymentsError as exc:
             reason = "lost_race" if "InvalidStatus" in str(exc) else "api_error"
             logger.info(
-                "p2c_live_agent_claim_failed socket_order_id=%s amount=%s currency=%s provider=%s brand=%s detect_to_take_start_ms=%d take_http_ms=%s total_from_detect_ms=%d reason=%s error=%s",
+                "p2c_live_agent_claim_failed socket_order_id=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s total_from_detect_ms=%d reason=%s error=%s",
                 event.socket_order_id,
                 event.in_amount,
                 event.in_asset,
                 event.provider,
                 event.brand_name,
+                queue_wait_ms,
                 detect_to_take_start_ms,
                 int((time.perf_counter() - take_started) * 1000) if take_started is not None else "n/a",
                 int((time.perf_counter() - received_at) * 1000),
                 reason,
                 str(exc),
             )
+            if self._is_penalty_error(exc):
+                self._activate_penalty_backoff(
+                    reference_id=event.socket_order_id,
+                    retry_after_seconds=self._extract_retry_after_seconds(exc),
+                    error=str(exc),
+                )
+                return
+            if self._is_auth_or_forbidden_error(exc):
+                self._pause_due_to_auth_error(
+                    context="claim",
+                    reference_id=event.socket_order_id,
+                    error=str(exc),
+                )
+                return
             if payment_id is not None and reason == "api_error":
                 await self._handle_taken_order_with_unknown_status(
                     event=event,
@@ -618,61 +654,132 @@ class P2CLiveAgent:
         *,
         socket_order_id: str,
         session: PlatformSession,
+        received_at: float,
     ) -> int:
-        burst_raw = getattr(self._settings, "platform_take_burst_size", 1)
-        burst = max(1, min(int(burst_raw), 3))
-        if burst == 1:
-            return await self._payments_client.take(
+        return await self._take_with_dispatch_log(
+            socket_order_id=socket_order_id,
+            session=session,
+            received_at=received_at,
+            client_slot=0,
+        )
+
+    async def _take_with_dispatch_log(
+        self,
+        *,
+        socket_order_id: str,
+        session: PlatformSession,
+        received_at: float,
+        client_slot: int,
+    ) -> int:
+        detect_to_post_dispatch_ms = int((time.perf_counter() - received_at) * 1000)
+        logger.info(
+            "p2c_live_agent_take_post_dispatch socket_order_id=%s attempt=%d detect_to_post_dispatch_ms=%d",
+            socket_order_id,
+            client_slot,
+            detect_to_post_dispatch_ms,
+        )
+        started = time.perf_counter()
+        try:
+            payment_id = await self._payments_client.take(
                 socket_order_id=socket_order_id,
                 session=session,
-                client_slot=0,
+                client_slot=client_slot,
             )
+        except Exception as exc:
+            logger.info(
+                "p2c_live_agent_take_attempt_failed socket_order_id=%s attempt=%d attempt_http_ms=%d error=%s",
+                socket_order_id,
+                client_slot,
+                int((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
+            raise
         logger.info(
-            "p2c_live_agent_take_burst_started socket_order_id=%s burst=%d",
+            "p2c_live_agent_take_attempt_succeeded socket_order_id=%s attempt=%d payment_id=%s attempt_http_ms=%d",
             socket_order_id,
-            burst,
+            client_slot,
+            payment_id,
+            int((time.perf_counter() - started) * 1000),
         )
-        tasks: dict[asyncio.Task[int], int] = {
-            asyncio.create_task(
-                self._payments_client.take(
-                    socket_order_id=socket_order_id,
-                    session=session,
-                    client_slot=idx,
-                )
-            ): idx
-            for idx in range(burst)
-        }
-        errors: list[Exception] = []
-        pending = set(tasks.keys())
-        while pending:
-            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for done_task in done:
-                attempt = tasks[done_task]
-                try:
-                    payment_id = done_task.result()
-                except Exception as exc:
-                    errors.append(exc if isinstance(exc, Exception) else Exception(str(exc)))
-                    logger.info(
-                        "p2c_live_agent_take_burst_attempt_failed socket_order_id=%s attempt=%d error=%s",
-                        socket_order_id,
-                        attempt,
-                        type(exc).__name__,
-                    )
-                    continue
-                for task in pending:
-                    task.cancel()
-                if pending:
-                    await asyncio.gather(*pending, return_exceptions=True)
-                logger.info(
-                    "p2c_live_agent_take_burst_succeeded socket_order_id=%s attempt=%d payment_id=%s",
-                    socket_order_id,
-                    attempt,
-                    payment_id,
-                )
-                return payment_id
-        if errors:
-            raise errors[0]
-        raise P2CPaymentsError("Take burst failed without explicit error")
+        return payment_id
+
+    @staticmethod
+    def _is_auth_or_forbidden_error(exc: Exception) -> bool:
+        text = str(exc)
+        if "status 401" in text:
+            return True
+        return "status 403" in text and "MerchantPenalized" not in text
+
+    @staticmethod
+    def _is_penalty_error(exc: Exception) -> bool:
+        return "MerchantPenalized" in str(exc)
+
+    @staticmethod
+    def _extract_retry_after_seconds(exc: Exception) -> int:
+        match = re.search(r'"retry_after"\s*:\s*(\d+)', str(exc))
+        if match is None:
+            return 60
+        try:
+            return max(int(match.group(1)), 0)
+        except ValueError:
+            return 60
+
+    def _pause_due_to_auth_error(self, *, context: str, reference_id: str, error: str) -> None:
+        self._state.pause()
+        self.on_pause()
+        logger.warning(
+            "p2c_live_agent_paused_due_to_auth context=%s reference_id=%s error=%s",
+            context,
+            reference_id,
+            error,
+        )
+
+    def _activate_penalty_backoff(self, *, reference_id: str, retry_after_seconds: int, error: str) -> None:
+        delay_seconds = max(retry_after_seconds, 0)
+        self._penalty_events += 1
+        self._state.pause()
+        generation = self._increment_pause_generation_and_stop_socket()
+        self._cancel_penalty_resume_task()
+        self._penalty_resume_task = asyncio.create_task(
+            self._resume_after_penalty(delay_seconds=delay_seconds, generation=generation)
+        )
+        self._penalty_resume_task.add_done_callback(self._log_background_task_result)
+        logger.warning(
+            "p2c_live_agent_penalty_backoff_started reference_id=%s retry_after=%d penalty_events=%d error=%s",
+            reference_id,
+            delay_seconds,
+            self._penalty_events,
+            error,
+        )
+
+    async def _resume_after_penalty(self, *, delay_seconds: int, generation: int) -> None:
+        await asyncio.sleep(delay_seconds)
+        if generation != self._pause_generation:
+            logger.info(
+                "p2c_live_agent_penalty_backoff_resume_skipped reason=stale_generation generation=%d current=%d",
+                generation,
+                self._pause_generation,
+            )
+            return
+        snapshot = self._state.run()
+        logger.info(
+            "p2c_live_agent_penalty_backoff_resumed retry_after=%d mode=%s free_slots=%d",
+            delay_seconds,
+            snapshot.mode.value,
+            snapshot.free_slots,
+        )
+
+    def _increment_pause_generation_and_stop_socket(self) -> int:
+        self._pause_generation += 1
+        if self._socket_client is not None:
+            self._socket_client.stop()
+        return self._pause_generation
+
+    def _cancel_penalty_resume_task(self) -> None:
+        task = self._penalty_resume_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._penalty_resume_task = None
 
     @staticmethod
     def _log_process_event_task_result(task: asyncio.Task[None]) -> None:
@@ -685,6 +792,19 @@ class P2CLiveAgent:
                 type(exc).__name__,
                 exc_info=exc,
             )
+
+    @staticmethod
+    def _log_background_task_result(task: asyncio.Task[None]) -> None:
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None:
+            return
+        logger.exception(
+            "p2c_live_agent_background_task_failed error=%s",
+            type(exc).__name__,
+            exc_info=exc,
+        )
 
     async def _resolve_method_id(
         self,

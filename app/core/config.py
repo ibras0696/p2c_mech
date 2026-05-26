@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     platform_cookie_header: str = Field(default="", alias="PLATFORM_COOKIE_HEADER")
     platform_claim_from_snapshot: bool = Field(default=False, alias="PLATFORM_CLAIM_FROM_SNAPSHOT")
     platform_take_burst_size: int = Field(default=1, alias="PLATFORM_TAKE_BURST_SIZE")
+    platform_force_ipv4: bool = Field(default=True, alias="PLATFORM_FORCE_IPV4")
     playwright_headless: bool = Field(default=True, alias="PLAYWRIGHT_HEADLESS")
     browser_runtime: str = Field(default="playwright", alias="BROWSER_RUNTIME")
 
