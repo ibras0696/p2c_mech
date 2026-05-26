@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     platform_claim_from_snapshot: bool = Field(default=False, alias="PLATFORM_CLAIM_FROM_SNAPSHOT")
     platform_take_burst_size: int = Field(default=1, alias="PLATFORM_TAKE_BURST_SIZE")
     platform_force_ipv4: bool = Field(default=True, alias="PLATFORM_FORCE_IPV4")
+    platform_take_health_enabled: bool = Field(default=True, alias="PLATFORM_TAKE_HEALTH_ENABLED")
+    platform_take_health_interval_seconds: int = Field(
+        default=5,
+        alias="PLATFORM_TAKE_HEALTH_INTERVAL_SECONDS",
+    )
     playwright_headless: bool = Field(default=True, alias="PLAYWRIGHT_HEADLESS")
     browser_runtime: str = Field(default="playwright", alias="BROWSER_RUNTIME")
 

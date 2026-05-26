@@ -67,11 +67,13 @@ class P2CLiveAgent:
         self._session_l1_cached_at_monotonic = 0.0
         self._session_l1_ttl_seconds = 2.0
         self._penalty_resume_task: asyncio.Task[None] | None = None
+        self._take_health_task: asyncio.Task[None] | None = None
         self._penalty_events = 0
 
     def stop(self) -> None:
         self._stop_event.set()
         self._cancel_penalty_resume_task()
+        self._cancel_take_health_task()
         if self._socket_client is not None:
             self._socket_client.stop()
 
@@ -99,9 +101,11 @@ class P2CLiveAgent:
         self._session_l1_cached_at_monotonic = time.monotonic()
 
     async def aclose(self) -> None:
+        self._cancel_take_health_task()
         await self._payments_client.aclose()
 
     async def run_forever(self) -> None:
+        self._start_take_health_task_if_needed()
         while not self._stop_event.is_set():
             try:
                 if self._state.snapshot().mode == AgentMode.PAUSED:
@@ -138,6 +142,51 @@ class P2CLiveAgent:
             except Exception as exc:
                 logger.warning("p2c_live_agent_loop_iteration_failed error=%s", type(exc).__name__)
                 await asyncio.sleep(1)
+
+    def _start_take_health_task_if_needed(self) -> None:
+        if not self._settings.platform_take_health_enabled:
+            return
+        if self._take_health_task is not None and not self._take_health_task.done():
+            return
+        self._take_health_task = asyncio.create_task(self._run_take_health_forever())
+        self._take_health_task.add_done_callback(self._log_background_task_result)
+        logger.info(
+            "p2c_live_agent_take_health_started interval_seconds=%d",
+            max(1, int(self._settings.platform_take_health_interval_seconds)),
+        )
+
+    async def _run_take_health_forever(self) -> None:
+        interval = max(1, int(self._settings.platform_take_health_interval_seconds))
+        while not self._stop_event.is_set():
+            if self._state.snapshot().mode != AgentMode.PAUSED:
+                session = await self._get_session()
+                if session is not None and session.cookie_header:
+                    try:
+                        await self._payments_client.prewarm_take_clients(session=session, channels=1)
+                    except Exception as exc:
+                        if self._is_auth_or_forbidden_error(exc):
+                            self._pause_due_to_auth_error(
+                                context="take_health",
+                                reference_id="take_health",
+                                error=str(exc),
+                            )
+                        else:
+                            logger.debug(
+                                "p2c_live_agent_take_health_failed error=%s",
+                                type(exc).__name__,
+                            )
+                    else:
+                        logger.debug("p2c_live_agent_take_health_ok")
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
+            except TimeoutError:
+                continue
+
+    def _cancel_take_health_task(self) -> None:
+        task = self._take_health_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._take_health_task = None
 
     async def complete_order(self, order_id: str) -> None:
         async with self._lock:

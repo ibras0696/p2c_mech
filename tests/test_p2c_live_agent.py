@@ -677,6 +677,8 @@ def make_settings() -> Settings:
             platform_ws_url="wss://app.send.tg/internal/v1/p2c-socket/?EIO=4&transport=websocket",
             platform_claim_from_snapshot=False,
             platform_take_burst_size=1,
+            platform_take_health_enabled=False,
+            platform_take_health_interval_seconds=5,
         ),
     )
 
