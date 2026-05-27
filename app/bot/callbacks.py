@@ -45,3 +45,13 @@ async def _edit_caption_or_send_new(
             await message.answer(text, reply_markup=reply_markup)
             return
         raise
+
+
+async def delete_message_safely(callback: CallbackQuery) -> None:
+    message = callback.message
+    if message is None:
+        return
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        return

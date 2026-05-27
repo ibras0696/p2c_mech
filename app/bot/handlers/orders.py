@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
 from app.bot.access import is_allowed_user, reject_callback
-from app.bot.callbacks import callback_data, edit_text
+from app.bot.callbacks import callback_data, delete_message_safely, edit_text
 from app.bot.state import agent_state
 from app.bot.ui import (
     orders_keyboard,
@@ -40,13 +40,13 @@ def build_orders_router(allowed_user_ids: set[int], live_agent: P2CLiveAgent) ->
             message = str(exc)
             if "Order is not active" in message:
                 await callback.answer("Заявка уже закрыта или не активна")
-                await edit_text(callback, f"✅ Заявка {order_id} уже закрыта.")
+                await delete_message_safely(callback)
                 return
             await callback.answer(f"Не удалось завершить заявку: {message}", show_alert=True)
             return
 
         await callback.answer("Оплата подтверждена")
-        await edit_text(callback, f"✅ Заявка {order_id} закрыта как оплаченная.")
+        await delete_message_safely(callback)
 
     @router.callback_query(F.data.startswith("order:cancel:"))
     async def callback_cancel(callback: CallbackQuery) -> None:
@@ -61,7 +61,7 @@ def build_orders_router(allowed_user_ids: set[int], live_agent: P2CLiveAgent) ->
             return
 
         await callback.answer("Заявка отменена")
-        await edit_text(callback, f"🛑 Заявка {order_id} отменена.")
+        await delete_message_safely(callback)
 
     @router.callback_query(F.data.startswith("order:confirm:"))
     async def callback_confirm_paid(callback: CallbackQuery) -> None:
@@ -81,3 +81,4 @@ def build_orders_router(allowed_user_ids: set[int], live_agent: P2CLiveAgent) ->
         await callback.answer()
 
     return router
+
