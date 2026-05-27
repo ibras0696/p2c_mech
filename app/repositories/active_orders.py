@@ -10,12 +10,13 @@ from app.bot.state import ActiveOrder, OrderStatus
 
 class ActiveOrderRepository(ABC):
     @abstractmethod
-    async def upsert(self, order: ActiveOrder) -> None:
+    async def upsert_for_user(self, user_id: int, order: ActiveOrder) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    async def remove(
+    async def remove_for_user(
         self,
+        user_id: int,
         order_id: str,
         *,
         final_status: str = OrderStatus.PAID.value,
@@ -24,38 +25,60 @@ class ActiveOrderRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def list_all(self) -> list[ActiveOrder]:
+    async def list_all_for_user(self, user_id: int) -> list[ActiveOrder]:
         raise NotImplementedError
+
+    async def upsert(self, order: ActiveOrder) -> None:
+        await self.upsert_for_user(0, order)
+
+    async def remove(
+        self,
+        order_id: str,
+        *,
+        final_status: str = OrderStatus.PAID.value,
+        reason: str = "",
+    ) -> None:
+        await self.remove_for_user(0, order_id, final_status=final_status, reason=reason)
+
+    async def list_all(self) -> list[ActiveOrder]:
+        return await self.list_all_for_user(0)
 
 
 class InMemoryActiveOrderRepository(ActiveOrderRepository):
     def __init__(self) -> None:
-        self._orders: dict[str, ActiveOrder] = {}
-        self._closed_ids: set[str] = set()
+        self._orders_by_user: dict[int, dict[str, ActiveOrder]] = {}
+        self._closed_ids_by_user: dict[int, set[str]] = {}
 
-    async def upsert(self, order: ActiveOrder) -> None:
-        self._orders[order.id] = order
-        self._closed_ids.discard(order.id)
+    async def upsert_for_user(self, user_id: int, order: ActiveOrder) -> None:
+        orders = self._orders_by_user.setdefault(user_id, {})
+        closed_ids = self._closed_ids_by_user.setdefault(user_id, set())
+        orders[order.id] = order
+        closed_ids.discard(order.id)
 
-    async def remove(
+    async def remove_for_user(
         self,
+        user_id: int,
         order_id: str,
         *,
         final_status: str = OrderStatus.PAID.value,
         reason: str = "",
     ) -> None:
         del reason
-        order = self._orders.get(order_id)
+        orders = self._orders_by_user.setdefault(user_id, {})
+        closed_ids = self._closed_ids_by_user.setdefault(user_id, set())
+        order = orders.get(order_id)
         if order is None:
             return
         if final_status in {OrderStatus.PAID.value, "completed", "complete", "success"}:
             order.status = OrderStatus.PAID
         elif final_status in {OrderStatus.CANCELLED.value, "cancelled", "canceled"}:
             order.status = OrderStatus.CANCELLED
-        self._closed_ids.add(order_id)
+        closed_ids.add(order_id)
 
-    async def list_all(self) -> list[ActiveOrder]:
-        return [order for order_id, order in self._orders.items() if order_id not in self._closed_ids]
+    async def list_all_for_user(self, user_id: int) -> list[ActiveOrder]:
+        orders = self._orders_by_user.setdefault(user_id, {})
+        closed_ids = self._closed_ids_by_user.setdefault(user_id, set())
+        return [order for order_id, order in orders.items() if order_id not in closed_ids]
 
 
 class PostgresActiveOrderRepository(ActiveOrderRepository):
@@ -63,12 +86,13 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
         self._database_url = database_url
         self._pool: asyncpg.Pool | None = None
 
-    async def upsert(self, order: ActiveOrder) -> None:
+    async def upsert_for_user(self, user_id: int, order: ActiveOrder) -> None:
         pool = await self._get_pool()
         await self._ensure_schema(pool)
         await pool.execute(
             """
             insert into active_orders (
+                user_id,
                 order_id,
                 amount,
                 currency,
@@ -86,8 +110,8 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
                 closed_at,
                 close_reason
             )
-            values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,null,'')
-            on conflict (order_id) do update set
+            values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,null,'')
+            on conflict (user_id, order_id) do update set
                 amount = excluded.amount,
                 currency = excluded.currency,
                 direction = excluded.direction,
@@ -104,6 +128,7 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
                 closed_at = null,
                 close_reason = ''
             """,
+            user_id,
             order.id,
             order.amount,
             order.currency,
@@ -120,8 +145,9 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
             order.deadline_at,
         )
 
-    async def remove(
+    async def remove_for_user(
         self,
+        user_id: int,
         order_id: str,
         *,
         final_status: str = OrderStatus.PAID.value,
@@ -135,14 +161,15 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
             set status = $2,
                 closed_at = now(),
                 close_reason = $3
-            where order_id = $1
+            where user_id = $1 and order_id = $4
             """,
-            order_id,
+            user_id,
             final_status,
             reason,
+            order_id,
         )
 
-    async def list_all(self) -> list[ActiveOrder]:
+    async def list_all_for_user(self, user_id: int) -> list[ActiveOrder]:
         pool = await self._get_pool()
         await self._ensure_schema(pool)
         rows = await pool.fetch(
@@ -152,9 +179,10 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
                 method_id, source_order_id, status, take_http_ms, claim_total_ms,
                 claimed_at, deadline_at
             from active_orders
-            where closed_at is null
+            where user_id = $1 and closed_at is null
             order by claimed_at asc
-            """
+            """,
+            user_id,
         )
         result: list[ActiveOrder] = []
         for row in rows:
@@ -198,6 +226,7 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
         await pool.execute(
             """
             create table if not exists active_orders (
+                user_id bigint not null default 0,
                 order_id text primary key,
                 amount text not null,
                 currency text not null,
@@ -215,6 +244,24 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
                 closed_at timestamptz null,
                 close_reason text not null default ''
             )
+            """
+        )
+        await pool.execute(
+            """
+            alter table active_orders
+            add column if not exists user_id bigint not null default 0
+            """
+        )
+        await pool.execute(
+            """
+            create unique index if not exists idx_active_orders_user_order
+            on active_orders (user_id, order_id)
+            """
+        )
+        await pool.execute(
+            """
+            create index if not exists idx_active_orders_user_closed
+            on active_orders (user_id, closed_at)
             """
         )
         await pool.execute(

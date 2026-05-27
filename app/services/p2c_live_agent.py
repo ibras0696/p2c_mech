@@ -48,6 +48,7 @@ class P2CLiveAgent:
         session_repository: PlatformSessionRepository,
         notify_order_ready: OrderNotifier,
         active_order_repository: ActiveOrderRepository | None = None,
+        user_id: int = 0,
     ) -> None:
         self._settings = settings
         self._state = state
@@ -55,6 +56,7 @@ class P2CLiveAgent:
         self._notify_order_ready = notify_order_ready
         self._payments_client = P2CPaymentsClient(base_url=settings.platform_base_url)
         self._active_order_repository = active_order_repository or InMemoryActiveOrderRepository()
+        self._user_id = user_id
         self._lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._inflight: set[str] = set()
@@ -197,7 +199,13 @@ class P2CLiveAgent:
         resolved_method_id = ""
         resolved_source = "none"
         try:
-            logger.info("p2c_live_agent_complete_started payment_id=%s", order_id)
+            logger.info(
+                "event=complete_started user_id=%s payment_id=%s source_order_id=%s latency_ms=%d",
+                self._user_id,
+                order_id,
+                "",
+                0,
+            )
             order = self._state.get_active_order(order_id)
             if order is None:
                 raise P2CPaymentsError("Order is not active")
@@ -209,11 +217,14 @@ class P2CLiveAgent:
                 session=session,
             )
             logger.info(
-                "p2c_live_agent_complete_details payment_id=%s status=%s details_method_id=%s raw_account_id=%s",
+                "event=complete_details user_id=%s payment_id=%s source_order_id=%s status=%s details_method_id=%s raw_account_id=%s latency_ms=%d",
+                self._user_id,
                 order.id,
+                order.source_order_id,
                 details.status,
                 _bool_flag(details.method_id),
                 _bool_flag(_extract_method_id_from_raw(details.raw)),
+                0,
             )
             status = details.status.lower()
             if status in FINAL_STATUSES:
@@ -224,10 +235,12 @@ class P2CLiveAgent:
                     reason=f"final_status:{details.status}",
                 )
                 logger.info(
-                    "p2c_live_agent_complete_already_final payment_id=%s source_order_id=%s status=%s",
+                    "event=complete_already_final user_id=%s payment_id=%s source_order_id=%s status=%s latency_ms=%d",
+                    self._user_id,
                     order.id,
                     order.source_order_id,
                     details.status,
+                    0,
                 )
                 return
             if status not in OWNED_OK_STATUSES:
@@ -244,10 +257,13 @@ class P2CLiveAgent:
                     "Order has no method id in payment details. Reopen method selection in platform and retry."
                 )
             logger.info(
-                "p2c_live_agent_complete_method_resolved payment_id=%s method_id=%s source=%s",
+                "event=complete_method_resolved user_id=%s payment_id=%s source_order_id=%s method_id=%s source=%s latency_ms=%d",
+                self._user_id,
                 order.id,
+                order.source_order_id,
                 method_id,
                 source,
+                0,
             )
             if not order.method_id and method_id:
                 self._state.upsert_active_order(replace(order, method_id=method_id))
@@ -259,14 +275,36 @@ class P2CLiveAgent:
             self._state.mark_paid(order.id)
             await self._remove_order_from_storage(order.id, final_status="paid", reason="operator_confirmed")
             logger.info(
-                "p2c_live_agent_complete_succeeded payment_id=%s source_order_id=%s",
+                "event=complete_succeeded user_id=%s payment_id=%s source_order_id=%s latency_ms=%d",
+                self._user_id,
                 order.id,
                 order.source_order_id,
+                0,
             )
         except Exception as exc:
+            if self._is_order_already_closed_error(exc):
+                order = self._state.get_active_order(order_id)
+                if order is not None:
+                    self._state.mark_paid(order.id)
+                    await self._remove_order_from_storage(
+                        order.id,
+                        final_status="already_final",
+                        reason="complete_already_closed",
+                    )
+                logger.info(
+                    "event=complete_already_closed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d",
+                    self._user_id,
+                    order_id,
+                    "",
+                    0,
+                )
+                return
             logger.warning(
-                "p2c_live_agent_complete_failed payment_id=%s error=%s reason=%s details_status=%s details_method_id=%s raw_account_id=%s resolved_method_id=%s resolved_source=%s",
+                "event=complete_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d error=%s reason=%s details_status=%s details_method_id=%s raw_account_id=%s resolved_method_id=%s resolved_source=%s",
+                self._user_id,
                 order_id,
+                "",
+                0,
                 type(exc).__name__,
                 str(exc),
                 details.status if details is not None else "",
@@ -296,11 +334,14 @@ class P2CLiveAgent:
                 session=session,
             )
             logger.info(
-                "p2c_live_agent_cancel_details payment_id=%s status=%s details_method_id=%s raw_account_id=%s",
+                "event=cancel_details user_id=%s payment_id=%s source_order_id=%s status=%s details_method_id=%s raw_account_id=%s latency_ms=%d",
+                self._user_id,
                 order.id,
+                order.source_order_id,
                 details.status,
                 _bool_flag(details.method_id),
                 _bool_flag(_extract_method_id_from_raw(details.raw)),
+                0,
             )
             method_id, source = await self._resolve_method_id(
                 order=order,
@@ -310,10 +351,13 @@ class P2CLiveAgent:
             resolved_method_id = method_id
             resolved_source = source
             logger.info(
-                "p2c_live_agent_cancel_method_resolved payment_id=%s method_id=%s source=%s",
+                "event=cancel_method_resolved user_id=%s payment_id=%s source_order_id=%s method_id=%s source=%s latency_ms=%d",
+                self._user_id,
                 order.id,
+                order.source_order_id,
                 method_id,
                 source,
+                0,
             )
             await self._payments_client.cancel(
                 payment_id=int(order.id),
@@ -323,14 +367,36 @@ class P2CLiveAgent:
             self._state.mark_paid(order.id)
             await self._remove_order_from_storage(order.id, final_status="cancelled", reason="operator_cancelled")
             logger.info(
-                "p2c_live_agent_cancel_succeeded payment_id=%s source_order_id=%s",
+                "event=cancel_succeeded user_id=%s payment_id=%s source_order_id=%s latency_ms=%d",
+                self._user_id,
                 order.id,
                 order.source_order_id,
+                0,
             )
         except Exception as exc:
+            if self._is_order_already_closed_error(exc):
+                order = self._state.get_active_order(order_id)
+                if order is not None:
+                    self._state.mark_paid(order.id)
+                    await self._remove_order_from_storage(
+                        order.id,
+                        final_status="already_final",
+                        reason="cancel_already_closed",
+                    )
+                logger.info(
+                    "event=cancel_already_closed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d",
+                    self._user_id,
+                    order_id,
+                    "",
+                    0,
+                )
+                return
             logger.warning(
-                "p2c_live_agent_cancel_failed payment_id=%s error=%s reason=%s details_status=%s details_method_id=%s raw_account_id=%s resolved_method_id=%s resolved_source=%s",
+                "event=cancel_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d error=%s reason=%s details_status=%s details_method_id=%s raw_account_id=%s resolved_method_id=%s resolved_source=%s",
+                self._user_id,
                 order_id,
+                "",
+                0,
                 type(exc).__name__,
                 str(exc),
                 details.status if details is not None else "",
@@ -427,18 +493,23 @@ class P2CLiveAgent:
     ) -> None:
         queue_wait_ms = int((time.perf_counter() - received_at) * 1000)
         logger.info(
-            "p2c_live_agent_claim_started socket_order_id=%s amount=%s currency=%s provider=%s queue_wait_ms=%d",
+            "event=claim_started user_id=%s payment_id=%s source_order_id=%s latency_ms=%d amount=%s currency=%s provider=%s",
+            self._user_id,
+            "",
             event.socket_order_id,
+            queue_wait_ms,
             event.in_amount,
             event.in_asset,
             event.provider,
-            queue_wait_ms,
         )
         session = await self._get_session()
         if session is None:
             logger.info(
-                "p2c_live_agent_claim_skipped_no_session socket_order_id=%s",
+                "event=claim_skipped_no_session user_id=%s payment_id=%s source_order_id=%s latency_ms=%d",
+                self._user_id,
+                "",
                 event.socket_order_id,
+                queue_wait_ms,
             )
             return
         take_started: float | None = None
@@ -466,12 +537,13 @@ class P2CLiveAgent:
             take_ms = int((time.perf_counter() - take_started) * 1000)
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
             logger.info(
-                "p2c_live_agent_take_result socket_order_id=%s payment_id=%s detect_to_take_start_ms=%d take_http_ms=%d total_from_detect_ms=%d",
-                event.socket_order_id,
+                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d",
+                self._user_id,
                 payment_id,
+                event.socket_order_id,
+                total_from_detect_ms,
                 detect_to_take_start_ms,
                 take_ms,
-                total_from_detect_ms,
             )
             logger.info(
                 "p2c_live_agent_claim_context socket_order_id=%s brand=%s out_asset=%s url_host=%s payload=%s",
@@ -494,8 +566,13 @@ class P2CLiveAgent:
         except P2CPaymentsError as exc:
             reason = "lost_race" if "InvalidStatus" in str(exc) else "api_error"
             logger.info(
-                "p2c_live_agent_claim_failed socket_order_id=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s total_from_detect_ms=%d reason=%s error=%s",
+                "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
+                self._user_id,
+                payment_id or "",
                 event.socket_order_id,
+                int((time.perf_counter() - received_at) * 1000),
+                reason,
+                str(exc),
                 event.in_amount,
                 event.in_asset,
                 event.provider,
@@ -503,9 +580,6 @@ class P2CLiveAgent:
                 queue_wait_ms,
                 detect_to_take_start_ms,
                 int((time.perf_counter() - take_started) * 1000) if take_started is not None else "n/a",
-                int((time.perf_counter() - received_at) * 1000),
-                reason,
-                str(exc),
             )
             if self._is_penalty_error(exc):
                 self._activate_penalty_backoff(
@@ -545,9 +619,11 @@ class P2CLiveAgent:
         self._state.upsert_active_order(order)
         await self._persist_active_order(order)
         logger.info(
-            "p2c_live_agent_claim_succeeded socket_order_id=%s payment_id=%s amount=%s currency=%s out_amount=%s out_asset=%s provider=%s brand=%s url_host=%s payload=%s",
-            event.socket_order_id,
+            "event=claim_succeeded user_id=%s payment_id=%s source_order_id=%s latency_ms=%d amount=%s currency=%s out_amount=%s out_asset=%s provider=%s brand=%s url_host=%s payload=%s",
+            self._user_id,
             details.id,
+            event.socket_order_id,
+            total_from_detect_ms,
             details.in_amount,
             details.in_asset,
             details.out_amount,
@@ -564,9 +640,11 @@ class P2CLiveAgent:
             if self._socket_client is not None:
                 self._socket_client.stop()
             logger.exception(
-                "p2c_live_agent_notify_failed_paused payment_id=%s source_order_id=%s error=%s",
+                "event=notify_failed_paused user_id=%s payment_id=%s source_order_id=%s latency_ms=%d error=%s",
+                self._user_id,
                 order.id,
                 order.source_order_id,
+                0,
                 type(exc).__name__,
             )
             return
@@ -598,9 +676,11 @@ class P2CLiveAgent:
         if self._socket_client is not None:
             self._socket_client.stop()
         logger.warning(
-            "p2c_live_agent_taken_unconfirmed_paused payment_id=%s source_order_id=%s provider=%s brand=%s",
+            "event=taken_unconfirmed_paused user_id=%s payment_id=%s source_order_id=%s latency_ms=%d provider=%s brand=%s",
+            self._user_id,
             order.id,
             order.source_order_id,
+            0,
             event.provider,
             event.brand_name,
         )
@@ -722,10 +802,12 @@ class P2CLiveAgent:
     ) -> int:
         detect_to_post_dispatch_ms = int((time.perf_counter() - received_at) * 1000)
         logger.info(
-            "p2c_live_agent_take_post_dispatch socket_order_id=%s attempt=%d detect_to_post_dispatch_ms=%d",
+            "event=take_post_dispatch user_id=%s payment_id=%s source_order_id=%s latency_ms=%d attempt=%d",
+            self._user_id,
+            "",
             socket_order_id,
-            client_slot,
             detect_to_post_dispatch_ms,
+            client_slot,
         )
         started = time.perf_counter()
         try:
@@ -736,19 +818,22 @@ class P2CLiveAgent:
             )
         except Exception as exc:
             logger.info(
-                "p2c_live_agent_take_attempt_failed socket_order_id=%s attempt=%d attempt_http_ms=%d error=%s",
+                "event=take_attempt_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d attempt=%d error=%s",
+                self._user_id,
+                "",
                 socket_order_id,
-                client_slot,
                 int((time.perf_counter() - started) * 1000),
+                client_slot,
                 type(exc).__name__,
             )
             raise
         logger.info(
-            "p2c_live_agent_take_attempt_succeeded socket_order_id=%s attempt=%d payment_id=%s attempt_http_ms=%d",
-            socket_order_id,
-            client_slot,
+            "event=take_attempt_succeeded user_id=%s payment_id=%s source_order_id=%s latency_ms=%d attempt=%d",
+            self._user_id,
             payment_id,
+            socket_order_id,
             int((time.perf_counter() - started) * 1000),
+            client_slot,
         )
         return payment_id
 
@@ -762,6 +847,17 @@ class P2CLiveAgent:
     @staticmethod
     def _is_penalty_error(exc: Exception) -> bool:
         return "MerchantPenalized" in str(exc)
+
+    @staticmethod
+    def _is_order_already_closed_error(exc: Exception) -> bool:
+        text = str(exc)
+        return (
+            "Order is not active" in text
+            or "status 404" in text
+            or "404 Not Found" in text
+            or "InvalidStatus" in text
+            or "status is not completable" in text
+        )
 
     @staticmethod
     def _extract_retry_after_seconds(exc: Exception) -> int:

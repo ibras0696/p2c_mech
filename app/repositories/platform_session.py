@@ -25,24 +25,30 @@ class PlatformSessionCache(ABC):
 
 class PlatformSessionRepository(ABC):
     @abstractmethod
-    async def save(self, session: PlatformSession) -> PlatformSession:
+    async def save_for_user(self, user_id: int, session: PlatformSession) -> PlatformSession:
         raise NotImplementedError
 
     @abstractmethod
-    async def current(self) -> PlatformSession | None:
+    async def current_for_user(self, user_id: int) -> PlatformSession | None:
         raise NotImplementedError
+
+    async def save(self, session: PlatformSession) -> PlatformSession:
+        return await self.save_for_user(0, session)
+
+    async def current(self) -> PlatformSession | None:
+        return await self.current_for_user(0)
 
 
 class InMemoryPlatformSessionRepository(PlatformSessionRepository):
     def __init__(self) -> None:
-        self._session: PlatformSession | None = None
+        self._sessions: dict[int, PlatformSession] = {}
 
-    async def save(self, session: PlatformSession) -> PlatformSession:
-        self._session = session
+    async def save_for_user(self, user_id: int, session: PlatformSession) -> PlatformSession:
+        self._sessions[user_id] = session
         return session
 
-    async def current(self) -> PlatformSession | None:
-        return self._session
+    async def current_for_user(self, user_id: int) -> PlatformSession | None:
+        return self._sessions.get(user_id)
 
 
 class RedisEncryptedPlatformSessionCache(PlatformSessionCache):
@@ -56,11 +62,11 @@ class RedisEncryptedPlatformSessionCache(PlatformSessionCache):
         redis_port: int = 6379,
         redis_db: int = 0,
         redis_password: str = "",
-        key: str = "p2c:platform_session:1",
+        key_prefix: str = "p2c:platform_session",
     ) -> None:
         self._cipher = cipher
         self._ttl_seconds = max(ttl_seconds, 60)
-        self._key = key
+        self._key_prefix = key_prefix
         if redis_url:
             self._client = redis_asyncio.from_url(
                 redis_url,
@@ -77,8 +83,8 @@ class RedisEncryptedPlatformSessionCache(PlatformSessionCache):
                 decode_responses=True,
             )
 
-    async def get(self) -> PlatformSession | None:
-        payload = await self._client.hgetall(self._key)
+    async def get_for_user(self, user_id: int) -> PlatformSession | None:
+        payload = await self._client.hgetall(self._key(user_id))
         if not payload:
             return None
         access_token_encrypted = payload.get("access_token_encrypted", "")
@@ -95,18 +101,27 @@ class RedisEncryptedPlatformSessionCache(PlatformSessionCache):
             updated_at=updated_at,
         )
 
-    async def set(self, session: PlatformSession) -> None:
+    async def set_for_user(self, user_id: int, session: PlatformSession) -> None:
         pipe = self._client.pipeline(transaction=True)
         pipe.hset(
-            self._key,
+            self._key(user_id),
             mapping={
                 "access_token_encrypted": self._cipher.encrypt(session.access_token),
                 "cf_bm_encrypted": self._cipher.encrypt(session.cf_bm),
                 "updated_at": session.updated_at.isoformat(),
             },
         )
-        pipe.expire(self._key, self._ttl_seconds)
+        pipe.expire(self._key(user_id), self._ttl_seconds)
         await pipe.execute()
+
+    async def get(self) -> PlatformSession | None:
+        return await self.get_for_user(0)
+
+    async def set(self, session: PlatformSession) -> None:
+        await self.set_for_user(0, session)
+
+    def _key(self, user_id: int) -> str:
+        return f"{self._key_prefix}:{user_id}"
 
 
 class CachedPlatformSessionRepository(PlatformSessionRepository):
@@ -119,17 +134,23 @@ class CachedPlatformSessionRepository(PlatformSessionRepository):
         self._primary = primary
         self._cache = cache
 
-    async def save(self, session: PlatformSession) -> PlatformSession:
-        stored = await self._primary.save(session)
+    async def save_for_user(self, user_id: int, session: PlatformSession) -> PlatformSession:
+        stored = await self._primary.save_for_user(user_id, session)
         try:
-            await self._cache.set(stored)
+            if isinstance(self._cache, RedisEncryptedPlatformSessionCache):
+                await self._cache.set_for_user(user_id, stored)
+            else:
+                await self._cache.set(stored)
         except Exception as exc:
             logger.warning("platform_session_cache_set_failed error=%s", type(exc).__name__)
         return stored
 
-    async def current(self) -> PlatformSession | None:
+    async def current_for_user(self, user_id: int) -> PlatformSession | None:
         try:
-            cached = await self._cache.get()
+            if isinstance(self._cache, RedisEncryptedPlatformSessionCache):
+                cached = await self._cache.get_for_user(user_id)
+            else:
+                cached = await self._cache.get()
         except Exception as exc:
             logger.warning("platform_session_cache_get_failed error=%s", type(exc).__name__)
         else:
@@ -137,11 +158,14 @@ class CachedPlatformSessionRepository(PlatformSessionRepository):
                 logger.debug("platform_session_cache_hit")
                 return cached
             logger.info("platform_session_cache_miss")
-        stored = await self._primary.current()
+        stored = await self._primary.current_for_user(user_id)
         if stored is None:
             return None
         try:
-            await self._cache.set(stored)
+            if isinstance(self._cache, RedisEncryptedPlatformSessionCache):
+                await self._cache.set_for_user(user_id, stored)
+            else:
+                await self._cache.set(stored)
         except Exception as exc:
             logger.warning("platform_session_cache_set_failed error=%s", type(exc).__name__)
         return stored
@@ -154,38 +178,41 @@ class PostgresEncryptedPlatformSessionRepository(PlatformSessionRepository):
         self._pool: asyncpg.Pool | None = None
         self._schema_ready = False
 
-    async def save(self, session: PlatformSession) -> PlatformSession:
+    async def save_for_user(self, user_id: int, session: PlatformSession) -> PlatformSession:
         pool = await self._get_pool()
         await self._ensure_schema(pool)
         await pool.execute(
             """
             insert into platform_sessions (
-                id,
+                user_id,
                 access_token_encrypted,
                 cf_bm_encrypted,
                 updated_at
             )
-            values (1, $1, $2, $3)
-            on conflict (id) do update set
+            values ($1, $2, $3, $4)
+            on conflict (user_id) do update set
                 access_token_encrypted = excluded.access_token_encrypted,
                 cf_bm_encrypted = excluded.cf_bm_encrypted,
                 updated_at = excluded.updated_at
             """,
+            user_id,
             self._cipher.encrypt(session.access_token),
             self._cipher.encrypt(session.cf_bm),
             session.updated_at,
         )
         return session
 
-    async def current(self) -> PlatformSession | None:
+    async def current_for_user(self, user_id: int) -> PlatformSession | None:
         pool = await self._get_pool()
         await self._ensure_schema(pool)
         row = await pool.fetchrow(
             """
             select access_token_encrypted, cf_bm_encrypted, updated_at
             from platform_sessions
-            where id = 1
+            where user_id = $1
             """
+            ,
+            user_id,
         )
         if row is None:
             return None
@@ -209,11 +236,30 @@ class PostgresEncryptedPlatformSessionRepository(PlatformSessionRepository):
         await pool.execute(
             """
             create table if not exists platform_sessions (
-                id integer primary key,
+                user_id bigint primary key,
                 access_token_encrypted text not null default '',
                 cf_bm_encrypted text not null default '',
                 updated_at timestamptz not null
             )
+            """
+        )
+        await pool.execute(
+            """
+            alter table platform_sessions
+            add column if not exists user_id bigint
+            """
+        )
+        await pool.execute(
+            """
+            update platform_sessions
+            set user_id = 0
+            where user_id is null
+            """
+        )
+        await pool.execute(
+            """
+            create unique index if not exists idx_platform_sessions_user_id
+            on platform_sessions (user_id)
             """
         )
         self._schema_ready = True

@@ -5,120 +5,142 @@ from datetime import UTC, datetime, timedelta
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from app.bot.access import is_allowed_user, reject_callback
+from app.bot.access import ensure_allowed_callback
 from app.bot.callbacks import edit_text
-from app.bot.preferences import apply_user_preferences
 from app.bot.session_state import PlatformSession
-from app.bot.state import agent_state
 from app.bot.ui import dashboard_keyboard, render_dashboard
 from app.core.logging import get_logger
-from app.repositories.agent_preferences import AgentPreferencesRepository
-from app.repositories.platform_session import PlatformSessionRepository
-from app.services.p2c_live_agent import P2CLiveAgent
+from app.services.admin_access import AdminAccessService
+from app.services.agent_runtime_manager import AgentRuntimeManager
 
 SESSION_MAX_AGE = timedelta(minutes=30)
 logger = get_logger(__name__)
 
 
 def build_actions_router(
-    allowed_user_ids: set[int],
-    platform_session_repository: PlatformSessionRepository,
-    preferences_repository: AgentPreferencesRepository,
-    live_agent: P2CLiveAgent,
+    access_service: AdminAccessService,
+    runtime_manager: AgentRuntimeManager,
 ) -> Router:
     router = Router()
 
     @router.callback_query(F.data == "agent:run")
     async def callback_run(callback: CallbackQuery) -> None:
-        logger.info("bot_action_run_clicked user_id=%s", callback.from_user.id)
-        if not is_allowed_user(callback.from_user.id, allowed_user_ids):
-            await reject_callback(callback)
+        if not await ensure_allowed_callback(callback, access_service):
             return
-        await apply_user_preferences(callback.from_user.id, preferences_repository)
-        try:
-            session = await platform_session_repository.current()
-        except Exception as exc:
-            await callback.answer(f"Сессия недоступна: {type(exc).__name__}", show_alert=True)
-            return
-        validation_error = validate_session_for_run(session)
-        if validation_error is not None:
-            logger.info("bot_action_run_blocked user_id=%s reason=%s", callback.from_user.id, validation_error)
-            await callback.answer(validation_error, show_alert=True)
-            return
-        await refresh_session_cache_for_run(
-            user_id=callback.from_user.id,
-            platform_session_repository=platform_session_repository,
-            session=session,
+        user_id = callback.from_user.id
+        started_at = datetime.now(UTC)
+        duplicate = await runtime_manager.is_callback_duplicate(
+            user_id=user_id,
+            message_id=callback.message.message_id if callback.message else 0,
+            callback_data=callback.data or "",
         )
-        live_agent.set_session_hint(session)
-        try:
-            await live_agent.prewarm_take_channels(session)
-        except Exception as exc:
-            logger.info(
-                "bot_action_run_blocked_on_prewarm user_id=%s error=%s",
-                callback.from_user.id,
-                type(exc).__name__,
-            )
-            await callback.answer(str(exc), show_alert=True)
+        if duplicate:
+            logger.info("event=agent_run_duplicate user_id=%s", user_id)
+            await callback.answer()
             return
-        live_agent.on_run()
-        snapshot = agent_state.run()
+        runtime = await runtime_manager.get_or_create(user_id)
+        async with runtime.action_lock:
+            session = await runtime.session_repository.current()
+            validation_error = validate_session_for_run(session)
+            if validation_error is not None:
+                logger.info(
+                    "event=agent_run_blocked user_id=%s reason=%s",
+                    user_id,
+                    validation_error,
+                )
+                await callback.answer(validation_error, show_alert=True)
+                return
+            session = await refresh_session_cache_for_run(session=session, runtime=runtime)
+            runtime.live_agent.set_session_hint(session)
+            try:
+                await runtime.live_agent.prewarm_take_channels(session)
+            except Exception as exc:
+                logger.warning(
+                    "event=agent_run_prewarm_failed user_id=%s error=%s",
+                    user_id,
+                    type(exc).__name__,
+                )
+                await callback.answer(str(exc), show_alert=True)
+                return
+            runtime.live_agent.on_run()
+            snapshot = await runtime_manager.run(user_id)
+        latency_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
         logger.info(
-            "bot_action_run_applied user_id=%s mode=%s active_count=%d free_slots=%d",
-            callback.from_user.id,
+            "event=agent_run_applied user_id=%s latency_ms=%d mode=%s active_count=%d",
+            user_id,
+            latency_ms,
             snapshot.mode.value,
             snapshot.active_count,
-            snapshot.free_slots,
         )
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot))
-        await callback.answer("Агент запущен")
+        await callback.answer("Agent is running")
 
     @router.callback_query(F.data == "agent:pause")
     async def callback_pause(callback: CallbackQuery) -> None:
-        logger.info("bot_action_pause_clicked user_id=%s", callback.from_user.id)
-        if not is_allowed_user(callback.from_user.id, allowed_user_ids):
-            await reject_callback(callback)
+        if not await ensure_allowed_callback(callback, access_service):
             return
-        live_agent.on_pause()
-        snapshot = agent_state.pause()
+        user_id = callback.from_user.id
+        started_at = datetime.now(UTC)
+        duplicate = await runtime_manager.is_callback_duplicate(
+            user_id=user_id,
+            message_id=callback.message.message_id if callback.message else 0,
+            callback_data=callback.data or "",
+        )
+        if duplicate:
+            logger.info("event=agent_pause_duplicate user_id=%s", user_id)
+            await callback.answer()
+            return
+        runtime = await runtime_manager.get_or_create(user_id)
+        async with runtime.action_lock:
+            snapshot = await runtime_manager.pause(user_id)
+        latency_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
         logger.info(
-            "bot_action_pause_applied user_id=%s mode=%s active_count=%d free_slots=%d",
-            callback.from_user.id,
+            "event=agent_pause_applied user_id=%s latency_ms=%d mode=%s active_count=%d",
+            user_id,
+            latency_ms,
             snapshot.mode.value,
             snapshot.active_count,
-            snapshot.free_slots,
         )
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot))
-        await callback.answer("Агент на паузе")
+        await callback.answer("Agent is paused")
 
     return router
 
 
 def validate_session_for_run(session: PlatformSession | None) -> str | None:
     if session is None:
-        return "Сначала обнови сессию в разделе 🔐 Сессия"
+        return "Update session first in the Session section."
     if not session.access_token.strip():
-        return "В сессии нет access_token. Пришли socket cURL заново"
+        return "Session has no access_token. Send socket cURL again."
     if not session.cf_bm.strip():
-        return "В сессии нет __cf_bm. Пришли socket cURL заново"
+        return "Session has no __cf_bm. Send socket cURL again."
     if datetime.now(UTC) - session.updated_at > SESSION_MAX_AGE:
-        return "Сессия устарела. Пришли socket cURL заново."
+        return "Session is stale. Send socket cURL again."
     return None
 
 
 async def refresh_session_cache_for_run(
     *,
-    user_id: int,
-    platform_session_repository: PlatformSessionRepository,
+    runtime=None,
+    user_id: int | None = None,
+    platform_session_repository=None,
     session: PlatformSession,
-) -> None:
+) -> PlatformSession:
+    updated = PlatformSession(
+        access_token=session.access_token,
+        cf_bm=session.cf_bm,
+        updated_at=datetime.now(UTC),
+    )
     try:
-        await platform_session_repository.save(session)
-    except Exception as exc:
-        logger.warning(
-            "bot_action_run_session_cache_refresh_failed user_id=%s error=%s",
-            user_id,
-            type(exc).__name__,
-        )
-        return
-    logger.info("bot_action_run_session_cache_refreshed user_id=%s", user_id)
+        if runtime is not None:
+            await runtime.session_repository.save(updated)
+            return updated
+        if platform_session_repository is None:
+            return updated
+        if user_id is not None and hasattr(platform_session_repository, "save_for_user"):
+            await platform_session_repository.save_for_user(user_id, updated)
+            return updated
+        await platform_session_repository.save(updated)
+    except Exception:
+        return updated
+    return updated

@@ -43,6 +43,8 @@ class Settings(BaseSettings):
         default=5,
         alias="PLATFORM_TAKE_HEALTH_INTERVAL_SECONDS",
     )
+    runtime_idle_ttl_seconds: int = Field(default=900, alias="RUNTIME_IDLE_TTL_SECONDS")
+    runtime_cleanup_interval_seconds: int = Field(default=60, alias="RUNTIME_CLEANUP_INTERVAL_SECONDS")
     playwright_headless: bool = Field(default=True, alias="PLAYWRIGHT_HEADLESS")
     browser_runtime: str = Field(default="playwright", alias="BROWSER_RUNTIME")
 

@@ -2,7 +2,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-
 from app.repositories.agent_preferences import (
     AgentPreferences,
     InMemoryAgentPreferencesRepository,

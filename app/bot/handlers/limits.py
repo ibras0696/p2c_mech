@@ -3,27 +3,24 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
-from app.bot.access import is_allowed_user, reject_callback
+from app.bot.access import ensure_allowed_callback
 from app.bot.callbacks import callback_data, edit_text
-from app.bot.preferences import apply_user_preferences, persist_current_preferences
-from app.bot.state import agent_state
 from app.bot.ui import dashboard_keyboard, limit_keyboard, render_dashboard, render_limit_panel
-from app.repositories.agent_preferences import AgentPreferencesRepository
+from app.services.admin_access import AdminAccessService
+from app.services.agent_runtime_manager import AgentRuntimeManager
 
 
 def build_limits_router(
-    allowed_user_ids: set[int],
-    preferences_repository: AgentPreferencesRepository,
+    access_service: AdminAccessService,
+    runtime_manager: AgentRuntimeManager,
 ) -> Router:
     router = Router()
 
     @router.callback_query(F.data == "limit:menu")
     async def callback_limit_menu(callback: CallbackQuery) -> None:
-        if not is_allowed_user(callback.from_user.id, allowed_user_ids):
-            await reject_callback(callback)
+        if not await ensure_allowed_callback(callback, access_service):
             return
-        await apply_user_preferences(callback.from_user.id, preferences_repository)
-        snapshot = agent_state.snapshot()
+        snapshot = await runtime_manager.snapshot(callback.from_user.id)
         await edit_text(
             callback,
             render_limit_panel(snapshot.active_limit),
@@ -33,13 +30,13 @@ def build_limits_router(
 
     @router.callback_query(F.data.startswith("limit:set:"))
     async def callback_set_limit(callback: CallbackQuery) -> None:
-        if not is_allowed_user(callback.from_user.id, allowed_user_ids):
-            await reject_callback(callback)
+        if not await ensure_allowed_callback(callback, access_service):
             return
         limit = int(callback_data(callback).rsplit(":", 1)[-1])
-        snapshot = agent_state.set_limit(limit)
-        await persist_current_preferences(callback.from_user.id, preferences_repository)
+        runtime = await runtime_manager.get_or_create(callback.from_user.id)
+        async with runtime.action_lock:
+            snapshot = await runtime_manager.set_limit(callback.from_user.id, limit)
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot))
-        await callback.answer(f"Лимит установлен: {snapshot.active_limit}")
+        await callback.answer(f"Limit set: {snapshot.active_limit}")
 
     return router

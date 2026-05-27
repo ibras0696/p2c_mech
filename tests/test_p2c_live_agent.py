@@ -22,6 +22,8 @@ class FakePaymentsClient:
         self.take_side_effects: list[tuple[float, int | Exception]] = []
         self.complete_calls: list[tuple[int, str]] = []
         self.cancel_calls: list[tuple[int, str]] = []
+        self.complete_error: Exception | None = None
+        self.cancel_error: Exception | None = None
         self.list_accounts_calls = 0
         self.payment_method_id = "method-1"
         self.payment_status = "processing"
@@ -70,12 +72,16 @@ class FakePaymentsClient:
 
     async def complete(self, *, payment_id: int, method_id: str, session: PlatformSession) -> None:
         del session
+        if self.complete_error is not None:
+            raise self.complete_error
         if self.complete_delay_seconds > 0:
             await asyncio.sleep(self.complete_delay_seconds)
         self.complete_calls.append((payment_id, method_id))
 
     async def cancel(self, *, payment_id: int, session: PlatformSession, method_id: str = "") -> None:
         del session
+        if self.cancel_error is not None:
+            raise self.cancel_error
         self.cancel_calls.append((payment_id, method_id))
 
     async def list_accounts(self, *, session: PlatformSession) -> list[dict[str, str]]:
@@ -610,6 +616,70 @@ async def test_cancel_order_calls_api_and_frees_slot() -> None:
     await agent.cancel_order("3566992")
     assert state.snapshot().active_count == 0
     assert fake.cancel_calls == [(3566992, "method-1")]
+
+
+@pytest.mark.asyncio
+async def test_complete_order_clears_local_when_complete_returns_404() -> None:
+    state = InMemoryAgentState()
+    state.upsert_active_order(
+        ActiveOrder(
+            id="3566992",
+            amount="97",
+            currency="RUB",
+            direction="P2C",
+            method_id="method-1",
+        )
+    )
+    repository = InMemoryPlatformSessionRepository()
+    await repository.save(
+        PlatformSession(access_token="token", cf_bm="cf", updated_at=datetime.now(UTC))
+    )
+    agent = P2CLiveAgent(
+        settings=make_settings(),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, []),
+    )
+    fake = FakePaymentsClient()
+    fake.complete_error = P2CPaymentsError("POST /internal/v1/p2c/payments/3566992/complete failed with status 404")
+    agent._payments_client = fake  # type: ignore[assignment]
+
+    await agent.complete_order("3566992")
+
+    assert state.snapshot().active_count == 0
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_clears_local_when_cancel_returns_404() -> None:
+    state = InMemoryAgentState()
+    state.upsert_active_order(
+        ActiveOrder(
+            id="3566992",
+            amount="97",
+            currency="RUB",
+            direction="P2C",
+            method_id="method-1",
+        )
+    )
+    repository = InMemoryPlatformSessionRepository()
+    await repository.save(
+        PlatformSession(access_token="token", cf_bm="cf", updated_at=datetime.now(UTC))
+    )
+    agent = P2CLiveAgent(
+        settings=make_settings(),
+        state=state,
+        session_repository=repository,
+        notify_order_ready=lambda order: capture_order(order, []),
+    )
+    fake = FakePaymentsClient()
+    fake.cancel_error = P2CPaymentsError(
+        "Cancel failed for payment 3566992: POST /internal/v1/p2c/payments/3566992/decline failed with status 404"
+    )
+    agent._payments_client = fake  # type: ignore[assignment]
+
+    await agent.cancel_order("3566992")
+
+    assert state.snapshot().active_count == 0
 
 
 @pytest.mark.asyncio

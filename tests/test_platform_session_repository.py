@@ -17,12 +17,14 @@ class FakePrimaryRepository(PlatformSessionRepository):
         self.current_calls = 0
         self.save_calls = 0
 
-    async def save(self, session: PlatformSession) -> PlatformSession:
+    async def save_for_user(self, user_id: int, session: PlatformSession) -> PlatformSession:
+        del user_id
         self.save_calls += 1
         self._stored = session
         return session
 
-    async def current(self) -> PlatformSession | None:
+    async def current_for_user(self, user_id: int) -> PlatformSession | None:
+        del user_id
         self.current_calls += 1
         return self._stored
 
@@ -60,6 +62,19 @@ async def test_in_memory_platform_session_repository() -> None:
     stored = await repository.current()
 
     assert stored == session
+
+
+@pytest.mark.asyncio
+async def test_in_memory_platform_session_repository_isolated_by_user() -> None:
+    repository = InMemoryPlatformSessionRepository()
+    first = PlatformSession(access_token="a", cf_bm="cf-a", updated_at=datetime.now(UTC))
+    second = PlatformSession(access_token="b", cf_bm="cf-b", updated_at=datetime.now(UTC))
+
+    await repository.save_for_user(1, first)
+    await repository.save_for_user(2, second)
+
+    assert await repository.current_for_user(1) == first
+    assert await repository.current_for_user(2) == second
 
 
 def test_build_platform_session_repository_requires_key_with_database_url() -> None:
