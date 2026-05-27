@@ -43,7 +43,8 @@ def build_filters_router(
                 Decimal(min_raw),
                 Decimal(max_raw),
             )
-        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot))
+        is_owner = await access_service.is_owner(callback.from_user.id)
+        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
         await callback.answer("Amount filter updated")
 
     @router.message(F.text.regexp(r"^\s*\d+(?:[.,]\d+)?\s+\d+(?:[.,]\d+)?\s*$"))
@@ -60,7 +61,8 @@ def build_filters_router(
         runtime = await runtime_manager.get_or_create(message.from_user.id)
         async with runtime.action_lock:
             snapshot = await runtime_manager.set_amount_filter(message.from_user.id, min_amount, max_amount)
-        await message.answer(render_dashboard(snapshot), reply_markup=dashboard_keyboard(snapshot))
+        is_owner = await access_service.is_owner(message.from_user.id)
+        await message.answer(render_dashboard(snapshot), reply_markup=dashboard_keyboard(snapshot, is_owner=is_owner))
 
     return router
 

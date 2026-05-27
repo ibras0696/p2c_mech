@@ -56,3 +56,13 @@ async def ensure_owner_message(
         return True
     await reject_message(message)
     return False
+
+
+async def ensure_owner_callback(
+    callback: CallbackQuery,
+    access_service: AdminAccessService,
+) -> bool:
+    if await access_service.is_owner(callback.from_user.id):
+        return True
+    await reject_callback(callback)
+    return False

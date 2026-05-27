@@ -72,7 +72,8 @@ def build_actions_router(
             snapshot.mode.value,
             snapshot.active_count,
         )
-        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot))
+        is_owner = await access_service.is_owner(user_id)
+        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
         await callback.answer("Agent is running")
 
     @router.callback_query(F.data == "agent:pause")
@@ -101,7 +102,8 @@ def build_actions_router(
             snapshot.mode.value,
             snapshot.active_count,
         )
-        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot))
+        is_owner = await access_service.is_owner(user_id)
+        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
         await callback.answer("Agent is paused")
 
     return router

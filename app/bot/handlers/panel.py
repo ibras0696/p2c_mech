@@ -27,8 +27,9 @@ def build_panel_router(
             return
         user_id = message.from_user.id if message.from_user else 0
         snapshot = await runtime_manager.snapshot(user_id)
+        is_owner = await access_service.is_owner(user_id)
         logger.info("event=panel_opened user_id=%s mode=%s active_count=%d", user_id, snapshot.mode.value, snapshot.active_count)
-        await message.answer(render_dashboard(snapshot), reply_markup=dashboard_keyboard(snapshot))
+        await message.answer(render_dashboard(snapshot), reply_markup=dashboard_keyboard(snapshot, is_owner=is_owner))
 
     @router.callback_query(F.data == "panel:refresh")
     async def callback_refresh(callback: CallbackQuery) -> None:
@@ -45,8 +46,9 @@ def build_panel_router(
             await callback.answer()
             return
         snapshot = await runtime_manager.snapshot(user_id)
+        is_owner = await access_service.is_owner(user_id)
         logger.info("event=panel_refreshed user_id=%s mode=%s active_count=%d", user_id, snapshot.mode.value, snapshot.active_count)
-        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot))
+        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
         await callback.answer()
 
     @router.callback_query(F.data == "panel:help")
@@ -55,9 +57,9 @@ def build_panel_router(
             return
         user_id = callback.from_user.id
         snapshot = await runtime_manager.snapshot(user_id)
+        is_owner = await access_service.is_owner(user_id)
         logger.info("event=panel_help_opened user_id=%s", user_id)
-        await edit_text(callback, render_help(), dashboard_keyboard(snapshot))
+        await edit_text(callback, render_help(), dashboard_keyboard(snapshot, is_owner=is_owner))
         await callback.answer()
 
     return router
-

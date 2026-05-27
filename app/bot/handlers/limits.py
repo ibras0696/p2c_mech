@@ -36,7 +36,8 @@ def build_limits_router(
         runtime = await runtime_manager.get_or_create(callback.from_user.id)
         async with runtime.action_lock:
             snapshot = await runtime_manager.set_limit(callback.from_user.id, limit)
-        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot))
+        is_owner = await access_service.is_owner(callback.from_user.id)
+        await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
         await callback.answer(f"Limit set: {snapshot.active_limit}")
 
     return router
