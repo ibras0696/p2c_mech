@@ -44,7 +44,7 @@ def build_session_router(
         try:
             session = parse_platform_session_from_text(message.text)
         except ValueError:
-            await message.answer("No access_token or __cf_bm found in message.")
+            await message.answer("Не найден access_token или __cf_bm в сообщении.")
             return
         await _delete_secret_message(message)
         runtime = await runtime_manager.get_or_create(user_id)
@@ -71,13 +71,13 @@ def build_session_router(
             return
         if session is None:
             await edit_text(callback, render_session_help(), session_keyboard())
-            await callback.answer("Session is not saved")
+            await callback.answer("Сессия не сохранена")
             logger.info("event=session_status_empty user_id=%s", user_id)
             return
         await edit_text(callback, render_session_status(session), session_keyboard())
-        access_state = "ok" if session.access_token.strip() else "no access_token"
-        cf_state = "ok" if session.cf_bm.strip() else "no __cf_bm"
-        await callback.answer(f"Session: {access_state}, {cf_state}")
+        access_state = "ok" if session.access_token.strip() else "нет access_token"
+        cf_state = "ok" if session.cf_bm.strip() else "нет __cf_bm"
+        await callback.answer(f"Сессия: {access_state}, {cf_state}")
         logger.info(
             "event=session_status user_id=%s has_access=%s has_cf=%s",
             user_id,
@@ -91,7 +91,7 @@ def build_session_router(
             return
         user_id = callback.from_user.id
         await edit_text(callback, render_session_help(), session_keyboard())
-        await callback.answer("Session instructions updated")
+        await callback.answer("Инструкция обновлена")
         logger.info("event=session_help_refreshed user_id=%s", user_id)
 
     @router.callback_query(F.data == "session:probe_socket")
@@ -108,7 +108,7 @@ def build_session_router(
             logger.warning("event=session_probe_failed user_id=%s error=%s", user_id, type(exc).__name__)
             return
         if session is None or not session.access_token.strip():
-            await callback.answer("Send socket cURL with access_token first", show_alert=True)
+            await callback.answer("Сначала пришлите socket cURL с access_token", show_alert=True)
             logger.info("event=session_probe_blocked user_id=%s reason=no_access_token", user_id)
             return
         settings = get_settings()
@@ -123,7 +123,7 @@ def build_session_router(
             await client.probe_once()
         except Exception as exc:
             logger.warning("event=session_probe_failed user_id=%s error=%s", user_id, type(exc).__name__)
-            await callback.answer(f"Socket probe failed: {type(exc).__name__}", show_alert=True)
+            await callback.answer(f"Тест сокета не прошел: {type(exc).__name__}", show_alert=True)
             return
 
         refreshed = PlatformSession(
@@ -139,7 +139,7 @@ def build_session_router(
             return
         latency_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
         logger.info("event=session_probe_succeeded user_id=%s latency_ms=%d", user_id, latency_ms)
-        await callback.answer("Socket probe passed. Session refreshed.", show_alert=True)
+        await callback.answer("Сокет подключился, сессия обновлена.", show_alert=True)
 
     return router
 
@@ -155,7 +155,7 @@ def _format_storage_error(exc: Exception) -> str:
     exc_name = type(exc).__name__
     if isinstance(exc, ConnectionRefusedError):
         return (
-            "PostgreSQL is unavailable. Start `docker compose up -d postgres redis` "
-            "or check DATABASE_URL."
+            "PostgreSQL недоступен. Запустите `docker compose up -d postgres redis` "
+            "или проверьте DATABASE_URL."
         )
-    return f"Session storage unavailable: {exc_name}"
+    return f"Хранилище сессии недоступно: {exc_name}"

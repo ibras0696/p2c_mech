@@ -74,7 +74,7 @@ def build_actions_router(
         )
         is_owner = await access_service.is_owner(user_id)
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
-        await callback.answer("Agent is running")
+        await callback.answer("Агент запущен")
 
     @router.callback_query(F.data == "agent:pause")
     async def callback_pause(callback: CallbackQuery) -> None:
@@ -104,20 +104,20 @@ def build_actions_router(
         )
         is_owner = await access_service.is_owner(user_id)
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
-        await callback.answer("Agent is paused")
+        await callback.answer("Агент на паузе")
 
     return router
 
 
 def validate_session_for_run(session: PlatformSession | None) -> str | None:
     if session is None:
-        return "Update session first in the Session section."
+        return "Сначала обновите сессию в разделе «Сессия»."
     if not session.access_token.strip():
-        return "Session has no access_token. Send socket cURL again."
+        return "В сессии нет access_token. Пришлите socket cURL заново."
     if not session.cf_bm.strip():
-        return "Session has no __cf_bm. Send socket cURL again."
+        return "В сессии нет __cf_bm. Пришлите socket cURL заново."
     if datetime.now(UTC) - session.updated_at > SESSION_MAX_AGE:
-        return "Session is stale. Send socket cURL again."
+        return "Сессия устарела. Пришлите socket cURL заново."
     return None
 
 

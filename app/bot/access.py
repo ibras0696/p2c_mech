@@ -19,11 +19,11 @@ def is_allowed_user(user_id: int | None, allowed_user_ids: set[int]) -> bool:
 
 
 async def reject_message(message: Message) -> None:
-    await message.answer("Access denied")
+    await message.answer("Доступ закрыт")
 
 
 async def reject_callback(callback: CallbackQuery) -> None:
-    await callback.answer("Access denied", show_alert=True)
+    await callback.answer("Доступ закрыт", show_alert=True)
 
 
 async def ensure_allowed_message(

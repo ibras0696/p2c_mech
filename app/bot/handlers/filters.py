@@ -45,7 +45,7 @@ def build_filters_router(
             )
         is_owner = await access_service.is_owner(callback.from_user.id)
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
-        await callback.answer("Amount filter updated")
+        await callback.answer("Фильтр суммы обновлен")
 
     @router.message(F.text.regexp(r"^\s*\d+(?:[.,]\d+)?\s+\d+(?:[.,]\d+)?\s*$"))
     async def handle_amount_filter_text(message: Message) -> None:
@@ -70,14 +70,14 @@ def build_filters_router(
 def parse_amount_range(text: str) -> tuple[Decimal, Decimal]:
     parts = text.replace(",", ".").split()
     if len(parts) != 2:
-        raise ValueError("Use amount range format: 100 500")
+        raise ValueError("Используйте формат диапазона: 100 500")
     try:
         min_amount = Decimal(parts[0])
         max_amount = Decimal(parts[1])
     except InvalidOperation as exc:
-        raise ValueError("Cannot parse amount values") from exc
+        raise ValueError("Не удалось прочитать значения суммы") from exc
     if min_amount < Decimal("0"):
-        raise ValueError("Minimum amount cannot be negative")
+        raise ValueError("Минимальная сумма не может быть отрицательной")
     if max_amount < min_amount:
-        raise ValueError("Maximum amount cannot be less than minimum amount")
+        raise ValueError("Максимум не может быть меньше минимума")
     return min_amount, max_amount

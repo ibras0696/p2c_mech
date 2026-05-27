@@ -73,7 +73,7 @@ def build_orders_router(
                         "",
                         latency_ms,
                     )
-                    await callback.answer("Order is already closed or expired")
+                    await callback.answer("Заявка уже закрыта или просрочена")
                     await delete_message_safely(callback)
                     return
                 logger.warning(
@@ -84,7 +84,7 @@ def build_orders_router(
                     latency_ms,
                     message,
                 )
-                await callback.answer(f"Failed to complete order: {message}", show_alert=True)
+                await callback.answer(f"Не удалось завершить заявку: {message}", show_alert=True)
                 return
         latency_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
         logger.info(
@@ -94,7 +94,7 @@ def build_orders_router(
             "",
             latency_ms,
         )
-        await callback.answer("Payment confirmed")
+        await callback.answer("Оплата подтверждена")
         await delete_message_safely(callback)
 
     @router.callback_query(F.data.startswith("order:cancel:"))
@@ -119,7 +119,7 @@ def build_orders_router(
                         "",
                         latency_ms,
                     )
-                    await callback.answer("Order is already closed or expired")
+                    await callback.answer("Заявка уже закрыта или просрочена")
                     await delete_message_safely(callback)
                     return
                 logger.warning(
@@ -130,7 +130,7 @@ def build_orders_router(
                     latency_ms,
                     message,
                 )
-                await callback.answer(f"Cancel failed: {message}", show_alert=True)
+                await callback.answer(f"Отмена недоступна: {message}", show_alert=True)
                 return
         latency_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
         logger.info(
@@ -140,7 +140,7 @@ def build_orders_router(
             "",
             latency_ms,
         )
-        await callback.answer("Order canceled")
+        await callback.answer("Заявка отменена")
         await delete_message_safely(callback)
 
     @router.callback_query(F.data.startswith("order:confirm:"))
@@ -152,7 +152,7 @@ def build_orders_router(
         snapshot = await runtime_manager.snapshot(user_id)
         order = next((item for item in snapshot.active_orders if item.id == order_id), None)
         if order is None:
-            await callback.answer("Order is no longer active", show_alert=True)
+            await callback.answer("Заявка уже не активна", show_alert=True)
             return
         logger.info(
             "event=order_confirm_opened user_id=%s payment_id=%s source_order_id=%s latency_ms=%d",
