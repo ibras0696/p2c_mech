@@ -12,8 +12,6 @@ services:
     depends_on:
       - postgres
       - redis
-    extra_hosts:
-      - "app.send.tg:138.249.21.3"
     networks:
       - appnet
     restart: unless-stopped
@@ -32,8 +30,6 @@ services:
     depends_on:
       - postgres
       - redis
-    extra_hosts:
-      - "app.send.tg:138.249.21.3"
     networks:
       - appnet
     restart: unless-stopped
@@ -63,8 +59,6 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-agent_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-agent_db}
     depends_on:
       - redis
-    extra_hosts:
-      - "app.send.tg:138.249.21.3"
     networks:
       - appnet
     restart: unless-stopped
