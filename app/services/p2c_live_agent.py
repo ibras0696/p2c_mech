@@ -538,7 +538,7 @@ class P2CLiveAgent:
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
             trace = getattr(self._payments_client, "last_take_trace", {}) or {}
             logger.info(
-                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d conn_reused=%s connect_ms=%s tls_ms=%s server_ttfb_ms=%s brand=%s out_asset=%s url_host=%s payload=%s",
+                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d conn_reused=%s pre_send_ms=%s server_wait_ms=%s brand=%s out_asset=%s url_host=%s payload=%s",
                 self._user_id,
                 payment_id,
                 event.socket_order_id,
@@ -546,9 +546,8 @@ class P2CLiveAgent:
                 detect_to_take_start_ms,
                 take_ms,
                 trace.get("reused"),
-                trace.get("connect_ms"),
-                trace.get("tls_ms"),
-                trace.get("server_ttfb_ms"),
+                trace.get("pre_send_ms"),
+                trace.get("server_wait_ms"),
                 event.brand_name,
                 event.out_asset,
                 _url_host(event.url),
@@ -568,16 +567,15 @@ class P2CLiveAgent:
             reason = "lost_race" if "InvalidStatus" in str(exc) else "api_error"
             trace = getattr(self._payments_client, "last_take_trace", {}) or {}
             logger.info(
-                "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s conn_reused=%s connect_ms=%s tls_ms=%s server_ttfb_ms=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
+                "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s conn_reused=%s pre_send_ms=%s server_wait_ms=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
                 self._user_id,
                 payment_id or "",
                 event.socket_order_id,
                 int((time.perf_counter() - received_at) * 1000),
                 reason,
                 trace.get("reused"),
-                trace.get("connect_ms"),
-                trace.get("tls_ms"),
-                trace.get("server_ttfb_ms"),
+                trace.get("pre_send_ms"),
+                trace.get("server_wait_ms"),
                 str(exc),
                 event.in_amount,
                 event.in_asset,

@@ -22,36 +22,44 @@ def _build_trace(store: dict[str, float]) -> TraceFn:
 
 
 def summarize_trace(store: dict[str, float]) -> dict[str, Any]:
-    """Turn raw httpcore trace timestamps into a connect/tls/ttfb breakdown.
+    """Split the take round-trip into the two zones that matter.
 
-    The key signal is ``reused``: if no new TCP connect happened the take flew
-    over an already-warm keepalive connection (fast path); otherwise it paid a
-    fresh TCP + TLS handshake before the request even left (slow path).
+    - ``pre_send_ms``: from entering httpcore to the request headers actually
+      going out — connection-pool / HTTP-2 stream acquisition. This is OUR
+      client and is fixable.
+    - ``server_wait_ms``: from finishing the request to the response headers
+      arriving — the platform origin's own processing. Not ours to fix.
+
+    ``reused`` stays as the warm/cold flag (no new TCP connect == warm).
     """
+    if not store:
+        return {"reused": None, "pre_send_ms": None, "server_wait_ms": None}
 
-    def span(start: str, end: str) -> int | None:
-        if start in store and end in store:
-            return int((store[end] - store[start]) * 1000)
+    def at(*names: str) -> float | None:
+        for name in names:
+            if name in store:
+                return store[name]
         return None
 
-    connect_ms = span("connection.connect_tcp.started", "connection.connect_tcp.complete")
-    tls_ms = span("connection.start_tls.started", "connection.start_tls.complete")
-    send_start = store.get("http2.send_request_headers.started") or store.get(
-        "http11.send_request_headers.started"
+    t0 = min(store.values())
+    send_start = at("http2.send_request_headers.started", "http11.send_request_headers.started")
+    recv_start = at(
+        "http2.receive_response_headers.started", "http11.receive_response_headers.started"
     )
-    resp_start = store.get("http2.receive_response_headers.started") or store.get(
-        "http11.receive_response_headers.started"
+    recv_done = at(
+        "http2.receive_response_headers.complete", "http11.receive_response_headers.complete"
     )
-    server_ttfb_ms = (
-        int((resp_start - send_start) * 1000)
-        if send_start is not None and resp_start is not None
+    connect_done = at("connection.connect_tcp.complete")
+    pre_send_ms = int((send_start - t0) * 1000) if send_start is not None else None
+    server_wait_ms = (
+        int((recv_done - recv_start) * 1000)
+        if recv_start is not None and recv_done is not None
         else None
     )
     return {
-        "reused": connect_ms is None,
-        "connect_ms": connect_ms,
-        "tls_ms": tls_ms,
-        "server_ttfb_ms": server_ttfb_ms,
+        "reused": connect_done is None,
+        "pre_send_ms": pre_send_ms,
+        "server_wait_ms": server_wait_ms,
     }
 
 
