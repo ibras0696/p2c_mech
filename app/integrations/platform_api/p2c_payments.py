@@ -31,9 +31,10 @@ def summarize_trace(store: dict[str, float]) -> dict[str, Any]:
       arriving — the platform origin's own processing. Not ours to fix.
 
     ``reused`` stays as the warm/cold flag (no new TCP connect == warm).
+    ``proto`` is ``http2`` or ``http11`` — used for A/B comparison.
     """
     if not store:
-        return {"reused": None, "pre_send_ms": None, "server_wait_ms": None}
+        return {"reused": None, "pre_send_ms": None, "server_wait_ms": None, "proto": None}
 
     def at(*names: str) -> float | None:
         for name in names:
@@ -56,10 +57,17 @@ def summarize_trace(store: dict[str, float]) -> dict[str, Any]:
         if recv_start is not None and recv_done is not None
         else None
     )
+    if any(k.startswith("http2.") for k in store):
+        proto = "http2"
+    elif any(k.startswith("http11.") for k in store):
+        proto = "http11"
+    else:
+        proto = None
     return {
         "reused": connect_done is None,
         "pre_send_ms": pre_send_ms,
         "server_wait_ms": server_wait_ms,
+        "proto": proto,
     }
 
 
@@ -84,21 +92,27 @@ class P2CPaymentDetails:
 
 
 class P2CPaymentsClient:
-    def __init__(self, *, base_url: str, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float = 10.0,
+        take_http1: bool = False,
+    ) -> None:
         if not base_url:
             raise ValueError("Platform base URL is required")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
         self._client = self._build_client()
         self._take_clients: list[httpx.AsyncClient] = [
-            self._build_client(),
-            self._build_client(),
-            self._build_client(),
+            self._build_client(http1_only=take_http1),
+            self._build_client(http1_only=take_http1),
+            self._build_client(http1_only=take_http1),
         ]
         self.last_take_trace: dict[str, Any] = {}
 
-    def _build_client(self) -> httpx.AsyncClient:
-        http2_enabled = _is_http2_supported()
+    def _build_client(self, *, http1_only: bool = False) -> httpx.AsyncClient:
+        http2_enabled = (not http1_only) and _is_http2_supported()
         try:
             transport = httpx.AsyncHTTPTransport(
                 retries=0,

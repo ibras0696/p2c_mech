@@ -54,7 +54,10 @@ class P2CLiveAgent:
         self._state = state
         self._session_repository = session_repository
         self._notify_order_ready = notify_order_ready
-        self._payments_client = P2CPaymentsClient(base_url=settings.platform_base_url)
+        self._payments_client = P2CPaymentsClient(
+            base_url=settings.platform_base_url,
+            take_http1=settings.platform_take_http1,
+        )
         self._active_order_repository = active_order_repository or InMemoryActiveOrderRepository()
         self._user_id = user_id
         self._lock = asyncio.Lock()
@@ -538,7 +541,7 @@ class P2CLiveAgent:
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
             trace = getattr(self._payments_client, "last_take_trace", {}) or {}
             logger.info(
-                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d conn_reused=%s pre_send_ms=%s server_wait_ms=%s brand=%s out_asset=%s url_host=%s payload=%s",
+                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d conn_reused=%s pre_send_ms=%s server_wait_ms=%s proto=%s brand=%s out_asset=%s url_host=%s payload=%s",
                 self._user_id,
                 payment_id,
                 event.socket_order_id,
@@ -548,6 +551,7 @@ class P2CLiveAgent:
                 trace.get("reused"),
                 trace.get("pre_send_ms"),
                 trace.get("server_wait_ms"),
+                trace.get("proto"),
                 event.brand_name,
                 event.out_asset,
                 _url_host(event.url),
@@ -567,7 +571,7 @@ class P2CLiveAgent:
             reason = "lost_race" if "InvalidStatus" in str(exc) else "api_error"
             trace = getattr(self._payments_client, "last_take_trace", {}) or {}
             logger.info(
-                "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s conn_reused=%s pre_send_ms=%s server_wait_ms=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
+                "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s conn_reused=%s pre_send_ms=%s server_wait_ms=%s proto=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
                 self._user_id,
                 payment_id or "",
                 event.socket_order_id,
@@ -576,6 +580,7 @@ class P2CLiveAgent:
                 trace.get("reused"),
                 trace.get("pre_send_ms"),
                 trace.get("server_wait_ms"),
+                trace.get("proto"),
                 str(exc),
                 event.in_amount,
                 event.in_asset,
