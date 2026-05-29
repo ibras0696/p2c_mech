@@ -6,11 +6,13 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
 from app.bot.access import ensure_allowed_callback
-from app.bot.callbacks import callback_data, delete_message_safely, edit_text
+from app.bot.callbacks import callback_data, edit_text
+from app.bot.state import ActiveOrder
 from app.bot.ui import (
     orders_keyboard,
     payment_confirm_keyboard,
     render_dashboard,
+    render_order_processed,
     render_payment_confirmation,
 )
 from app.core.logging import get_logger
@@ -19,6 +21,19 @@ from app.services.admin_access import AdminAccessService
 from app.services.agent_runtime_manager import AgentRuntimeManager
 
 logger = get_logger(__name__)
+
+
+async def _finalize_order_message(
+    callback: CallbackQuery,
+    order: ActiveOrder | None,
+    *,
+    outcome: str,
+) -> None:
+    # Keep the order message in the chat (do not delete it): edit it into a
+    # final state that still shows how fast the order was caught.
+    if order is None:
+        return
+    await edit_text(callback, render_order_processed(order, outcome=outcome), None)
 
 
 def _is_order_closed_error(message: str) -> bool:
@@ -59,6 +74,7 @@ def build_orders_router(
         order_id = callback_data(callback).rsplit(":", 1)[-1]
         started_at = datetime.now(UTC)
         runtime = await runtime_manager.get_or_create(user_id)
+        order = runtime.state.get_active_order(order_id)
         async with runtime.action_lock:
             try:
                 await runtime.live_agent.complete_order(order_id)
@@ -74,7 +90,7 @@ def build_orders_router(
                         latency_ms,
                     )
                     await callback.answer("Заявка уже закрыта или просрочена")
-                    await delete_message_safely(callback)
+                    await _finalize_order_message(callback, order, outcome="closed")
                     return
                 logger.warning(
                     "event=order_paid_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d error=%s",
@@ -95,7 +111,7 @@ def build_orders_router(
             latency_ms,
         )
         await callback.answer("Оплата подтверждена")
-        await delete_message_safely(callback)
+        await _finalize_order_message(callback, order, outcome="paid")
 
     @router.callback_query(F.data.startswith("order:cancel:"))
     async def callback_cancel(callback: CallbackQuery) -> None:
@@ -105,6 +121,7 @@ def build_orders_router(
         order_id = callback_data(callback).rsplit(":", 1)[-1]
         started_at = datetime.now(UTC)
         runtime = await runtime_manager.get_or_create(user_id)
+        order = runtime.state.get_active_order(order_id)
         async with runtime.action_lock:
             try:
                 await runtime.live_agent.cancel_order(order_id)
@@ -120,7 +137,7 @@ def build_orders_router(
                         latency_ms,
                     )
                     await callback.answer("Заявка уже закрыта или просрочена")
-                    await delete_message_safely(callback)
+                    await _finalize_order_message(callback, order, outcome="closed")
                     return
                 logger.warning(
                     "event=order_cancel_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d error=%s",
@@ -141,7 +158,7 @@ def build_orders_router(
             latency_ms,
         )
         await callback.answer("Заявка отменена")
-        await delete_message_safely(callback)
+        await _finalize_order_message(callback, order, outcome="cancelled")
 
     @router.callback_query(F.data.startswith("order:confirm:"))
     async def callback_confirm_paid(callback: CallbackQuery) -> None:

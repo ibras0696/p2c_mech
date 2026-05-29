@@ -55,6 +55,30 @@ def render_payment_confirmation(order: ActiveOrder) -> str:
     )
 
 
+PROCESSED_HEADERS = {
+    "paid": "✅ Оплачено",
+    "cancelled": "❌ Отменено",
+    "closed": "⚠️ Заявка закрыта или просрочена",
+}
+
+
+def render_order_processed(order: ActiveOrder, *, outcome: str) -> str:
+    header = PROCESSED_HEADERS.get(outcome, "✅ Обработано")
+    processed_at = datetime.now(UTC).strftime("%H:%M:%S")
+    return "\n".join(
+        [
+            header,
+            "━━━━━━━━━━━━━━",
+            "",
+            f"🧾 Заявка: {order.id}",
+            f"💰 Сумма: {order.amount} {order.currency}",
+            f"🏷 Провайдер: {order.provider or 'unknown'}",
+            f"⚡ Время захвата: {render_claim_latency(order, with_prefix=False)}",
+            f"🕒 Обработано: {processed_at}",
+        ]
+    )
+
+
 def render_limit_panel(current_limit: int) -> str:
     return "\n".join(
         [
