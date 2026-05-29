@@ -67,7 +67,7 @@ class P2CLiveAgent:
         self._cached_account_method_id: str = ""
         self._session_l1_cache: PlatformSession | None = None
         self._session_l1_cached_at_monotonic = 0.0
-        self._session_l1_ttl_seconds = 2.0
+        self._session_l1_ttl_seconds = 30.0
         self._penalty_resume_task: asyncio.Task[None] | None = None
         self._take_health_task: asyncio.Task[None] | None = None
         self._penalty_events = 0
@@ -408,7 +408,7 @@ class P2CLiveAgent:
             raise
 
     async def _on_socket_message(self, message: str) -> None:
-        if self._state.snapshot().mode == AgentMode.PAUSED:
+        if self._state.mode() == AgentMode.PAUSED:
             return
         if (
             not self._settings.platform_claim_from_snapshot
@@ -438,13 +438,13 @@ class P2CLiveAgent:
         if pause_generation != self._pause_generation:
             skip_reason = "stale_pause_generation"
         else:
-            snapshot = self._state.snapshot()
-            if snapshot.mode != AgentMode.WAITING:
-                skip_reason = f"mode_{snapshot.mode.value}"
-                skip_snapshot_mode = snapshot.mode.value
-            elif snapshot.free_slots <= 0:
+            current_mode = self._state.mode()
+            if current_mode != AgentMode.WAITING:
+                skip_reason = f"mode_{current_mode.value}"
+                skip_snapshot_mode = current_mode.value
+            elif self._state.snapshot().free_slots <= 0:
                 skip_reason = "no_free_slots"
-                skip_free_slots = snapshot.free_slots
+                skip_free_slots = 0
             elif not self._state.amount_matches(event.in_amount):
                 skip_reason = "amount_filtered"
             else:
@@ -521,7 +521,7 @@ class P2CLiveAgent:
                     event.socket_order_id,
                 )
                 return
-            if self._state.snapshot().mode == AgentMode.PAUSED:
+            if self._state.mode() == AgentMode.PAUSED:
                 logger.info(
                     "p2c_live_agent_claim_skipped_paused socket_order_id=%s",
                     event.socket_order_id,
@@ -537,17 +537,13 @@ class P2CLiveAgent:
             take_ms = int((time.perf_counter() - take_started) * 1000)
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
             logger.info(
-                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d",
+                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d brand=%s out_asset=%s url_host=%s payload=%s",
                 self._user_id,
                 payment_id,
                 event.socket_order_id,
                 total_from_detect_ms,
                 detect_to_take_start_ms,
                 take_ms,
-            )
-            logger.info(
-                "p2c_live_agent_claim_context socket_order_id=%s brand=%s out_asset=%s url_host=%s payload=%s",
-                event.socket_order_id,
                 event.brand_name,
                 event.out_asset,
                 _url_host(event.url),
@@ -739,17 +735,15 @@ class P2CLiveAgent:
         *,
         payment_id: int,
     ) -> P2CPaymentDetails:
-        attempts = 3
         last_error: Exception | None = None
-        for _attempt in range(attempts):
-            session = await self._get_session(force_refresh=_attempt > 0)
+        for attempt in range(3):
+            session = await self._get_session(force_refresh=attempt > 0)
             if session is None:
                 raise P2CPaymentsError("Platform session is missing")
             try:
                 details = await self._payments_client.get_payment(payment_id=payment_id, session=session)
             except Exception as exc:
                 last_error = exc
-                await asyncio.sleep(0.2)
                 continue
             if details.id != payment_id:
                 raise P2CPaymentsError("Payment id mismatch in details")
@@ -785,56 +779,26 @@ class P2CLiveAgent:
         session: PlatformSession,
         received_at: float,
     ) -> int:
-        return await self._take_with_dispatch_log(
-            socket_order_id=socket_order_id,
-            session=session,
-            received_at=received_at,
-            client_slot=0,
-        )
-
-    async def _take_with_dispatch_log(
-        self,
-        *,
-        socket_order_id: str,
-        session: PlatformSession,
-        received_at: float,
-        client_slot: int,
-    ) -> int:
-        detect_to_post_dispatch_ms = int((time.perf_counter() - received_at) * 1000)
-        logger.info(
-            "event=take_post_dispatch user_id=%s payment_id=%s source_order_id=%s latency_ms=%d attempt=%d",
-            self._user_id,
-            "",
-            socket_order_id,
-            detect_to_post_dispatch_ms,
-            client_slot,
-        )
+        # SINGLE attempt by design: the platform penalizes repeated/parallel
+        # claims of the same order (MerchantPenalized). The claim is not
+        # idempotent, so it must never be bursted or fanned out. Speed comes
+        # from the pre-warmed slot-0 connection (kept hot by the health loop),
+        # not from racing multiple POSTs.
         started = time.perf_counter()
         try:
             payment_id = await self._payments_client.take(
                 socket_order_id=socket_order_id,
                 session=session,
-                client_slot=client_slot,
+                client_slot=0,
             )
         except Exception as exc:
-            logger.info(
-                "event=take_attempt_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d attempt=%d error=%s",
-                self._user_id,
-                "",
+            logger.debug(
+                "event=take_failed source_order_id=%s latency_ms=%d error=%s",
                 socket_order_id,
                 int((time.perf_counter() - started) * 1000),
-                client_slot,
                 type(exc).__name__,
             )
             raise
-        logger.info(
-            "event=take_attempt_succeeded user_id=%s payment_id=%s source_order_id=%s latency_ms=%d attempt=%d",
-            self._user_id,
-            payment_id,
-            socket_order_id,
-            int((time.perf_counter() - started) * 1000),
-            client_slot,
-        )
         return payment_id
 
     @staticmethod

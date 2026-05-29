@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -10,6 +9,7 @@ from typing import Any, cast
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from app.core.fastjson import loads as json_loads
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -204,8 +204,8 @@ class P2CSocketClient:
     def _log_engine_open(self, message: str) -> None:
         payload = message[1:]
         try:
-            data: dict[str, Any] = json.loads(payload)
-        except json.JSONDecodeError:
+            data: dict[str, Any] = json_loads(payload)
+        except (ValueError, TypeError):
             logger.info("p2c_socket_engine_open_received")
             return
 
@@ -254,12 +254,15 @@ def build_cookie_header(
 
 
 def _extract_socket_event_name(message: str) -> str:
+    # Hot path: derive the event name with a cheap string scan instead of
+    # parsing the entire frame. Socket.IO frames look like 42["event",[...]];
+    # event names never contain escaped quotes, so the first quoted token is it.
     if not message.startswith("42"):
         return ""
-    try:
-        payload = json.loads(message[2:])
-    except json.JSONDecodeError:
+    start = message.find('"', 2)
+    if start == -1:
         return ""
-    if isinstance(payload, list) and payload and isinstance(payload[0], str):
-        return payload[0]
-    return ""
+    end = message.find('"', start + 1)
+    if end == -1:
+        return ""
+    return message[start + 1 : end]

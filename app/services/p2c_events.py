@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from app.core.fastjson import loads as json_loads
 
 
 @dataclass(frozen=True)
@@ -22,8 +23,8 @@ def parse_order_events(message: str) -> list[P2COrderEvent]:
     if not message.startswith("42"):
         return []
     try:
-        packet: Any = json.loads(message[2:])
-    except json.JSONDecodeError:
+        packet: Any = json_loads(message[2:])
+    except (ValueError, TypeError):
         return []
     if not isinstance(packet, list) or not packet:
         return []

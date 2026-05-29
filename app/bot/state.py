@@ -63,6 +63,10 @@ class InMemoryAgentState:
         self._min_amount = Decimal("0")
         self._max_amount = Decimal("1000000")
 
+    def mode(self) -> AgentMode:
+        self._sync_capacity_mode()
+        return self._mode
+
     def snapshot(self) -> AgentSnapshot:
         self._sync_capacity_mode()
         return AgentSnapshot(
