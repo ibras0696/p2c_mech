@@ -2,12 +2,57 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from app.bot.session_state import PlatformSession
+
+TraceFn = Callable[[str, Mapping[str, Any]], Awaitable[None]]
+
+
+def _build_trace(store: dict[str, float]) -> TraceFn:
+    async def trace(name: str, info: Mapping[str, Any]) -> None:
+        store.setdefault(name, time.perf_counter())
+
+    return trace
+
+
+def summarize_trace(store: dict[str, float]) -> dict[str, Any]:
+    """Turn raw httpcore trace timestamps into a connect/tls/ttfb breakdown.
+
+    The key signal is ``reused``: if no new TCP connect happened the take flew
+    over an already-warm keepalive connection (fast path); otherwise it paid a
+    fresh TCP + TLS handshake before the request even left (slow path).
+    """
+
+    def span(start: str, end: str) -> int | None:
+        if start in store and end in store:
+            return int((store[end] - store[start]) * 1000)
+        return None
+
+    connect_ms = span("connection.connect_tcp.started", "connection.connect_tcp.complete")
+    tls_ms = span("connection.start_tls.started", "connection.start_tls.complete")
+    send_start = store.get("http2.send_request_headers.started") or store.get(
+        "http11.send_request_headers.started"
+    )
+    resp_start = store.get("http2.receive_response_headers.started") or store.get(
+        "http11.receive_response_headers.started"
+    )
+    server_ttfb_ms = (
+        int((resp_start - send_start) * 1000)
+        if send_start is not None and resp_start is not None
+        else None
+    )
+    return {
+        "reused": connect_ms is None,
+        "connect_ms": connect_ms,
+        "tls_ms": tls_ms,
+        "server_ttfb_ms": server_ttfb_ms,
+    }
 
 
 class P2CPaymentsError(RuntimeError):
@@ -42,6 +87,7 @@ class P2CPaymentsClient:
             self._build_client(),
             self._build_client(),
         ]
+        self.last_take_trace: dict[str, Any] = {}
 
     def _build_client(self) -> httpx.AsyncClient:
         http2_enabled = _is_http2_supported()
@@ -87,12 +133,17 @@ class P2CPaymentsClient:
         session: PlatformSession,
         client_slot: int | None = None,
     ) -> int:
-        payload = await self._request_json(
-            method="POST",
-            path=f"/internal/v1/p2c/payments/take/{socket_order_id}",
-            session=session,
-            client=self._resolve_take_client(client_slot),
-        )
+        trace_store: dict[str, float] = {}
+        try:
+            payload = await self._request_json(
+                method="POST",
+                path=f"/internal/v1/p2c/payments/take/{socket_order_id}",
+                session=session,
+                client=self._resolve_take_client(client_slot),
+                trace=_build_trace(trace_store),
+            )
+        finally:
+            self.last_take_trace = summarize_trace(trace_store)
         payment_id = extract_payment_id(payload)
         if payment_id is None:
             raise P2CPaymentsError("Take response does not contain payment id")
@@ -211,6 +262,7 @@ class P2CPaymentsClient:
         session: PlatformSession,
         json_body: dict[str, Any] | None = None,
         client: httpx.AsyncClient | None = None,
+        trace: TraceFn | None = None,
     ) -> dict[str, Any]:
         body = await self._request(
             method=method,
@@ -219,6 +271,7 @@ class P2CPaymentsClient:
             json_body=json_body,
             expect_json=True,
             client=client,
+            trace=trace,
         )
         if not isinstance(body, dict):
             raise P2CPaymentsError(f"{method} {path} returned unexpected payload")
@@ -233,6 +286,7 @@ class P2CPaymentsClient:
         json_body: dict[str, Any] | None = None,
         expect_json: bool,
         client: httpx.AsyncClient | None = None,
+        trace: TraceFn | None = None,
     ) -> dict[str, Any] | None:
         if not session.cookie_header:
             raise P2CPaymentsError("Platform session cookie is missing")
@@ -250,7 +304,13 @@ class P2CPaymentsClient:
         if json_body is not None:
             headers["content-type"] = "application/json"
         url = f"{self._base_url}{path}"
-        response = await (client or self._client).request(method=method, url=url, headers=headers, json=json_body)
+        target = client or self._client
+        if trace is None:
+            response = await target.request(method=method, url=url, headers=headers, json=json_body)
+        else:
+            request = target.build_request(method=method, url=url, headers=headers, json=json_body)
+            request.extensions["trace"] = trace
+            response = await target.send(request)
         if response.status_code >= 400:
             raise P2CPaymentsError(
                 f"{method} {path} failed with status {response.status_code}: {response.text[:300]}"
