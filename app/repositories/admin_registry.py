@@ -104,6 +104,7 @@ class PostgresAdminRegistryRepository(AdminRegistryRepository):
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
         self._pool: asyncpg.Pool | None = None
+        self._schema_ready = False
 
     async def upsert_user(
         self,
@@ -179,10 +180,12 @@ class PostgresAdminRegistryRepository(AdminRegistryRepository):
 
     async def _get_pool(self) -> asyncpg.Pool:
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=3)
+            self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=10)
         return self._pool
 
     async def _ensure_schema(self, pool: asyncpg.Pool) -> None:
+        if self._schema_ready:
+            return
         await pool.execute(
             """
             create table if not exists admin_registry (
@@ -200,6 +203,7 @@ class PostgresAdminRegistryRepository(AdminRegistryRepository):
             on admin_registry (is_active)
             """
         )
+        self._schema_ready = True
 
 
 def _map_admin_user(row: asyncpg.Record) -> AdminUser:

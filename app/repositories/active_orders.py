@@ -85,6 +85,7 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
         self._pool: asyncpg.Pool | None = None
+        self._schema_ready = False
 
     async def upsert_for_user(self, user_id: int, order: ActiveOrder) -> None:
         pool = await self._get_pool()
@@ -219,15 +220,20 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
 
     async def _get_pool(self) -> asyncpg.Pool:
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=3)
+            self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=10)
         return self._pool
 
     async def _ensure_schema(self, pool: asyncpg.Pool) -> None:
+        if self._schema_ready:
+            return
+        # NOTE: composite primary key (user_id, order_id) applies to fresh
+        # installs only; create-table-if-not-exists is a no-op on tables that
+        # already exist with the legacy order_id-only PK.
         await pool.execute(
             """
             create table if not exists active_orders (
                 user_id bigint not null default 0,
-                order_id text primary key,
+                order_id text not null,
                 amount text not null,
                 currency text not null,
                 direction text not null,
@@ -242,7 +248,8 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
                 claimed_at timestamptz not null,
                 deadline_at timestamptz null,
                 closed_at timestamptz null,
-                close_reason text not null default ''
+                close_reason text not null default '',
+                primary key (user_id, order_id)
             )
             """
         )
@@ -276,6 +283,7 @@ class PostgresActiveOrderRepository(ActiveOrderRepository):
             add column if not exists close_reason text not null default ''
             """
         )
+        self._schema_ready = True
 
 
 def build_active_order_repository(*, database_url: str) -> ActiveOrderRepository:

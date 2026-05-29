@@ -50,6 +50,7 @@ class PostgresAgentPreferencesRepository(AgentPreferencesRepository):
     def __init__(self, database_url: str) -> None:
         self._database_url = database_url
         self._pool: asyncpg.Pool | None = None
+        self._schema_ready = False
 
     async def save_for_user(self, user_id: int, preferences: AgentPreferences) -> AgentPreferences:
         pool = await self._get_pool()
@@ -103,10 +104,12 @@ class PostgresAgentPreferencesRepository(AgentPreferencesRepository):
 
     async def _get_pool(self) -> asyncpg.Pool:
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=3)
+            self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=10)
         return self._pool
 
     async def _ensure_schema(self, pool: asyncpg.Pool) -> None:
+        if self._schema_ready:
+            return
         await pool.execute(
             """
             create table if not exists agent_user_preferences (
@@ -118,6 +121,7 @@ class PostgresAgentPreferencesRepository(AgentPreferencesRepository):
             )
             """
         )
+        self._schema_ready = True
 
 
 def build_agent_preferences_repository(*, database_url: str) -> AgentPreferencesRepository:

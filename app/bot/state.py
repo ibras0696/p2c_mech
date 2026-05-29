@@ -141,6 +141,3 @@ class InMemoryAgentState:
             self._mode = AgentMode.CAPACITY_REACHED
         elif self._mode == AgentMode.CAPACITY_REACHED:
             self._mode = AgentMode.WAITING
-
-
-agent_state = InMemoryAgentState()
