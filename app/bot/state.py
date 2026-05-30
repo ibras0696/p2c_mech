@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -55,6 +56,34 @@ class AgentSnapshot:
         return max(self.active_limit - self.active_count, 0)
 
 
+_SAMPLE_WINDOW = 50
+
+
+@dataclass
+class ClaimMetrics:
+    attempts: int = 0
+    wins: int = 0
+    win_ms_samples: deque[int] = field(default_factory=lambda: deque(maxlen=_SAMPLE_WINDOW))
+    loss_ms_samples: deque[int] = field(default_factory=lambda: deque(maxlen=_SAMPLE_WINDOW))
+    last_win_at: datetime | None = None
+
+    @property
+    def losses(self) -> int:
+        return self.attempts - self.wins
+
+    @property
+    def win_rate_pct(self) -> float:
+        return round(100 * self.wins / self.attempts, 1) if self.attempts else 0.0
+
+    @property
+    def avg_win_ms(self) -> int | None:
+        return int(sum(self.win_ms_samples) / len(self.win_ms_samples)) if self.win_ms_samples else None
+
+    @property
+    def avg_loss_ms(self) -> int | None:
+        return int(sum(self.loss_ms_samples) / len(self.loss_ms_samples)) if self.loss_ms_samples else None
+
+
 class InMemoryAgentState:
     def __init__(self) -> None:
         self._mode = AgentMode.PAUSED
@@ -62,6 +91,7 @@ class InMemoryAgentState:
         self._active_orders: list[ActiveOrder] = []
         self._min_amount = Decimal("0")
         self._max_amount = Decimal("1000000")
+        self._metrics = ClaimMetrics()
 
     def mode(self) -> AgentMode:
         self._sync_capacity_mode()
@@ -133,6 +163,18 @@ class InMemoryAgentState:
         )
         self._sync_capacity_mode()
         return self.snapshot()
+
+    def record_claim(self, *, success: bool, take_ms: int) -> None:
+        self._metrics.attempts += 1
+        if success:
+            self._metrics.wins += 1
+            self._metrics.win_ms_samples.append(take_ms)
+            self._metrics.last_win_at = datetime.now(UTC)
+        else:
+            self._metrics.loss_ms_samples.append(take_ms)
+
+    def get_metrics(self) -> ClaimMetrics:
+        return self._metrics
 
     def _sync_capacity_mode(self) -> None:
         if self._mode == AgentMode.PAUSED:

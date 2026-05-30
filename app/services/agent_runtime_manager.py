@@ -10,7 +10,7 @@ from urllib.parse import quote
 from aiogram import Bot
 from redis import asyncio as redis_asyncio  # type: ignore[import-untyped]
 
-from app.bot.state import ActiveOrder, AgentSnapshot, InMemoryAgentState
+from app.bot.state import ActiveOrder, AgentSnapshot, ClaimMetrics, InMemoryAgentState
 from app.bot.ui import payment_confirm_keyboard, render_payment_confirmation
 from app.core.config import Settings
 from app.core.logging import get_logger
@@ -203,6 +203,10 @@ class AgentRuntimeManager:
         runtime.last_used_monotonic = time.monotonic()
         runtime.last_used_at = datetime.now(UTC)
         return snapshot
+
+    async def get_metrics(self, user_id: int) -> ClaimMetrics:
+        runtime = await self.get_or_create(user_id)
+        return runtime.state.get_metrics()
 
     async def runtime_statuses(self) -> list[dict[str, object]]:
         async with self._lock:

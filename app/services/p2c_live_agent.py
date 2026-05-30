@@ -570,6 +570,10 @@ class P2CLiveAgent:
         except P2CPaymentsError as exc:
             reason = "lost_race" if "InvalidStatus" in str(exc) else "api_error"
             trace = getattr(self._payments_client, "last_take_trace", {}) or {}
+            self._state.record_claim(
+                success=False,
+                take_ms=int((time.perf_counter() - take_started) * 1000) if take_started is not None else 0,
+            )
             logger.info(
                 "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s conn_reused=%s pre_send_ms=%s server_wait_ms=%s proto=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
                 self._user_id,
@@ -626,6 +630,7 @@ class P2CLiveAgent:
             deadline_at=datetime.now(UTC) + timedelta(minutes=3),
         )
         self._state.upsert_active_order(order)
+        self._state.record_claim(success=True, take_ms=take_ms)
         await self._persist_active_order(order)
         logger.info(
             "event=claim_succeeded user_id=%s payment_id=%s source_order_id=%s latency_ms=%d amount=%s currency=%s out_amount=%s out_asset=%s provider=%s brand=%s url_host=%s payload=%s",

@@ -14,6 +14,7 @@ from app.bot.ui.renderers import (
     render_limit_panel,
     render_order_processed,
     render_payment_confirmation,
+    render_stats,
 )
 
 __all__ = [
@@ -30,4 +31,5 @@ __all__ = [
     "render_limit_panel",
     "render_order_processed",
     "render_payment_confirmation",
+    "render_stats",
 ]

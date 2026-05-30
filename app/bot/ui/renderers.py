@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from app.bot.state import ActiveOrder, AgentSnapshot
+from app.bot.state import ActiveOrder, AgentSnapshot, ClaimMetrics
 from app.bot.ui.labels import MODE_LABELS
 
 
@@ -120,6 +120,29 @@ def render_help() -> str:
             "✅ Оплачено закрывает выбранную заявку и освобождает слот после ручной проверки.",
         ]
     )
+
+
+def render_stats(metrics: ClaimMetrics) -> str:
+    win_ms = f"{metrics.avg_win_ms} ms" if metrics.avg_win_ms is not None else "—"
+    loss_ms = f"{metrics.avg_loss_ms} ms" if metrics.avg_loss_ms is not None else "—"
+    last_win = (
+        metrics.last_win_at.strftime("%d.%m %H:%M") if metrics.last_win_at else "—"
+    )
+    return "\n".join([
+        "📊 Статистика клеймов",
+        "━━━━━━━━━━━━━━",
+        "",
+        f"🎯 Попыток: {metrics.attempts}",
+        f"✅ Поймано: {metrics.wins}",
+        f"❌ Проиграно: {metrics.losses}",
+        f"📈 Win rate: {metrics.win_rate_pct}%",
+        "",
+        f"⚡ Avg take (win): {win_ms}",
+        f"⚡ Avg take (lose): {loss_ms}",
+        f"🕒 Последний захват: {last_win}",
+        "",
+        "Данные с момента запуска бота.",
+    ])
 
 
 def render_deadline(order: ActiveOrder, *, with_prefix: bool = True) -> str:

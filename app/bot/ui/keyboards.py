@@ -17,6 +17,7 @@ def dashboard_keyboard(snapshot: AgentSnapshot, *, is_owner: bool = False) -> In
     builder.button(text="📋 Активные", callback_data="orders:list")
     builder.button(text="⚙️ Лимит", callback_data="limit:menu")
     builder.button(text="💵 Суммы", callback_data="filters:amount")
+    builder.button(text="📊 Статистика", callback_data="panel:stats")
     builder.button(text="🔐 Сессия", callback_data="session:status")
     builder.button(text="ℹ️ Помощь", callback_data="panel:help")
     if is_owner:

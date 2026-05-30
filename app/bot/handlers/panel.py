@@ -6,7 +6,7 @@ from aiogram.types import CallbackQuery, Message
 
 from app.bot.access import ensure_allowed_callback, ensure_allowed_message
 from app.bot.callbacks import edit_text
-from app.bot.ui import dashboard_keyboard, render_dashboard, render_help
+from app.bot.ui import dashboard_keyboard, render_dashboard, render_help, render_stats
 from app.core.logging import get_logger
 from app.services.admin_access import AdminAccessService
 from app.services.agent_runtime_manager import AgentRuntimeManager
@@ -60,6 +60,18 @@ def build_panel_router(
         is_owner = await access_service.is_owner(user_id)
         logger.info("event=panel_help_opened user_id=%s", user_id)
         await edit_text(callback, render_help(), dashboard_keyboard(snapshot, is_owner=is_owner))
+        await callback.answer()
+
+    @router.callback_query(F.data == "panel:stats")
+    async def callback_stats(callback: CallbackQuery) -> None:
+        if not await ensure_allowed_callback(callback, access_service):
+            return
+        user_id = callback.from_user.id
+        metrics = await runtime_manager.get_metrics(user_id)
+        snapshot = await runtime_manager.snapshot(user_id)
+        is_owner = await access_service.is_owner(user_id)
+        logger.info("event=panel_stats_opened user_id=%s attempts=%d wins=%d", user_id, metrics.attempts, metrics.wins)
+        await edit_text(callback, render_stats(metrics), dashboard_keyboard(snapshot, is_owner=is_owner))
         await callback.answer()
 
     return router
