@@ -25,3 +25,4 @@ storage-state.json
 playwright-report/
 test-results/
 .DS_Store
+setup_server.sh

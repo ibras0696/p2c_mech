@@ -420,18 +420,20 @@ class P2CLiveAgent:
             logger.info("p2c_live_agent_snapshot_skipped")
             return
         received_at = time.perf_counter()
+        received_wall = time.time()
         events = parse_order_events(message)
         if events:
             logger.info("p2c_live_agent_events_received count=%d", len(events))
         for event in events:
             generation = self._pause_generation
-            task = asyncio.create_task(self._process_event(event, received_at, generation))
+            task = asyncio.create_task(self._process_event(event, received_at, received_wall, generation))
             task.add_done_callback(self._log_process_event_task_result)
 
     async def _process_event(
         self,
         event: P2COrderEvent,
         received_at: float,
+        received_wall: float,
         pause_generation: int,
     ) -> None:
         should_try = False
@@ -474,7 +476,7 @@ class P2CLiveAgent:
             )
             return
         try:
-            await self._claim_and_publish(event, received_at, pause_generation)
+            await self._claim_and_publish(event, received_at, received_wall, pause_generation)
         except Exception as exc:
             logger.exception(
                 "p2c_live_agent_process_event_unhandled socket_order_id=%s error=%s",
@@ -492,9 +494,15 @@ class P2CLiveAgent:
         self,
         event: P2COrderEvent,
         received_at: float,
+        received_wall: float,
         pause_generation: int,
     ) -> None:
         queue_wait_ms = int((time.perf_counter() - received_at) * 1000)
+        # Возраст заявки на момент приёма WS-кадра: разница между временем
+        # создания (из ObjectID) и временем, когда кадр дошёл до нас. Если у
+        # выигранных заявок этот возраст стабильно меньше — значит гонка
+        # решается доставкой WS, а не скоростью take.
+        order_age_ms = _object_id_age_ms(event.socket_order_id, received_wall)
         logger.info(
             "event=claim_started user_id=%s payment_id=%s source_order_id=%s latency_ms=%d amount=%s currency=%s provider=%s",
             self._user_id,
@@ -541,7 +549,7 @@ class P2CLiveAgent:
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
             trace = getattr(self._payments_client, "last_take_trace", {}) or {}
             logger.info(
-                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d conn_reused=%s pre_send_ms=%s server_wait_ms=%s proto=%s brand=%s out_asset=%s url_host=%s payload=%s",
+                "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d conn_reused=%s pre_send_ms=%s server_wait_ms=%s proto=%s order_age_ms=%s brand=%s out_asset=%s url_host=%s payload=%s",
                 self._user_id,
                 payment_id,
                 event.socket_order_id,
@@ -552,6 +560,7 @@ class P2CLiveAgent:
                 trace.get("pre_send_ms"),
                 trace.get("server_wait_ms"),
                 trace.get("proto"),
+                order_age_ms,
                 event.brand_name,
                 event.out_asset,
                 _url_host(event.url),
@@ -575,7 +584,7 @@ class P2CLiveAgent:
                 take_ms=int((time.perf_counter() - take_started) * 1000) if take_started is not None else 0,
             )
             logger.info(
-                "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s conn_reused=%s pre_send_ms=%s server_wait_ms=%s proto=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
+                "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s conn_reused=%s pre_send_ms=%s server_wait_ms=%s proto=%s order_age_ms=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
                 self._user_id,
                 payment_id or "",
                 event.socket_order_id,
@@ -585,6 +594,7 @@ class P2CLiveAgent:
                 trace.get("pre_send_ms"),
                 trace.get("server_wait_ms"),
                 trace.get("proto"),
+                order_age_ms,
                 str(exc),
                 event.in_amount,
                 event.in_asset,
@@ -633,11 +643,12 @@ class P2CLiveAgent:
         self._state.record_claim(success=True, take_ms=take_ms)
         await self._persist_active_order(order)
         logger.info(
-            "event=claim_succeeded user_id=%s payment_id=%s source_order_id=%s latency_ms=%d amount=%s currency=%s out_amount=%s out_asset=%s provider=%s brand=%s url_host=%s payload=%s",
+            "event=claim_succeeded user_id=%s payment_id=%s source_order_id=%s latency_ms=%d order_age_ms=%s amount=%s currency=%s out_amount=%s out_asset=%s provider=%s brand=%s url_host=%s payload=%s",
             self._user_id,
             details.id,
             event.socket_order_id,
             total_from_detect_ms,
+            order_age_ms,
             details.in_amount,
             details.in_asset,
             details.out_amount,
@@ -1006,6 +1017,20 @@ class P2CLiveAgent:
             order.id,
         )
         return "", "none"
+
+
+def _object_id_age_ms(object_id: str, now_wall: float) -> int | None:
+    # MongoDB ObjectID: первые 8 hex-символов = 4-байтный unix-таймстамп
+    # создания (big-endian, секундная точность). Возраст = now - created.
+    if len(object_id) < 8:
+        return None
+    try:
+        created_s = int(object_id[:8], 16)
+    except ValueError:
+        return None
+    if created_s <= 0:
+        return None
+    return int((now_wall - created_s) * 1000)
 
 
 def _short(value: str, limit: int = 24) -> str:
