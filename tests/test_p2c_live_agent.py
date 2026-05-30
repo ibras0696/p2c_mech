@@ -149,6 +149,7 @@ async def test_live_agent_claims_and_notifies_owned_order() -> None:
         "6a1206db7440f5cd5e5c69c7",
         "6a1206db7440f5cd5e5c69c7",
         "6a1206db7440f5cd5e5c69c7",
+        "6a1206db7440f5cd5e5c69c7",
     ]
     assert snapshot.active_count == 1
     assert snapshot.active_orders[0].id == "3566992"
@@ -808,7 +809,7 @@ async def test_live_agent_uses_session_hint_without_repository_read() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_agent_sends_four_take_attempts_with_stagger() -> None:
+async def test_live_agent_sends_five_parallel_take_attempts() -> None:
     state = InMemoryAgentState()
     state.run()
     repository = InMemoryPlatformSessionRepository()
@@ -840,6 +841,7 @@ async def test_live_agent_sends_four_take_attempts_with_stagger() -> None:
         (0.0, P2CPaymentsError("already claimed 1")),
         (0.0, P2CPaymentsError("already claimed 2")),
         (0.0, P2CPaymentsError("already claimed 3")),
+        (0.0, P2CPaymentsError("already claimed 4")),
     ]
     agent._payments_client = fake  # type: ignore[assignment]
 
@@ -859,7 +861,7 @@ async def test_live_agent_sends_four_take_attempts_with_stagger() -> None:
     )
 
     snapshot = state.snapshot()
-    assert len(fake.take_calls) == 4
+    assert len(fake.take_calls) == 5
     assert snapshot.active_count == 1
     assert snapshot.active_orders[0].id == "3567999"
 
@@ -917,6 +919,12 @@ async def test_live_agent_merchant_penalized_is_not_special_state_transition() -
                 'POST /internal/v1/p2c/payments/take/xyz failed with status 403: {"error":"MerchantPenalized","retry_after":0}'
             ),
         ),
+        (
+            0.0,
+            P2CPaymentsError(
+                'POST /internal/v1/p2c/payments/take/xyz failed with status 403: {"error":"MerchantPenalized","retry_after":0}'
+            ),
+        ),
     ]
     agent._payments_client = fake  # type: ignore[assignment]
 
@@ -935,7 +943,7 @@ async def test_live_agent_merchant_penalized_is_not_special_state_transition() -
         agent._pause_generation,  # type: ignore[attr-defined]
     )
     snapshot = state.snapshot()
-    assert len(fake.take_calls) == 4
+    assert len(fake.take_calls) == 5
     assert snapshot.mode == AgentMode.WAITING
     assert snapshot.active_count == 0
 
@@ -965,6 +973,7 @@ async def test_live_agent_pauses_when_take_returns_401() -> None:
         (0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized")),
         (0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized")),
         (0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized")),
+        (0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized")),
     ]
     agent._payments_client = fake  # type: ignore[assignment]
 
@@ -984,7 +993,7 @@ async def test_live_agent_pauses_when_take_returns_401() -> None:
     )
 
     snapshot = state.snapshot()
-    assert len(fake.take_calls) == 4
+    assert len(fake.take_calls) == 5
     assert snapshot.mode == AgentMode.PAUSED
     assert snapshot.active_count == 0
     assert notifications == []

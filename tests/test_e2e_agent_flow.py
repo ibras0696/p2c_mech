@@ -90,6 +90,7 @@ async def test_e2e_socket_update_to_complete_flow() -> None:
         "socket-e2e-1",
         "socket-e2e-1",
         "socket-e2e-1",
+        "socket-e2e-1",
     ]
 
     await agent.complete_order("7770001")

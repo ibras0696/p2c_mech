@@ -802,13 +802,11 @@ class P2CLiveAgent:
         received_at: float,
     ) -> int:
         del received_at
-        burst_size = 4
-        stagger_seconds = 0.05
+        burst_size = 5
         attempts: list[tuple[int, dict[str, object]] | BaseException] = []
 
         async def attempt_take(slot: int) -> tuple[int, dict[str, object]]:
             started = time.perf_counter()
-            await asyncio.sleep(slot * stagger_seconds)
             try:
                 payment_id = await self._payments_client.take(
                     socket_order_id=socket_order_id,
