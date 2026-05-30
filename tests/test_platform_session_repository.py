@@ -2,11 +2,13 @@ from datetime import UTC, datetime
 
 import pytest
 from app.bot.session_state import PlatformSession, parse_platform_session_from_text
+from app.core.crypto import generate_encryption_key
 from app.repositories.platform_session import (
     CachedPlatformSessionRepository,
     InMemoryPlatformSessionRepository,
     PlatformSessionCache,
     PlatformSessionRepository,
+    PostgresEncryptedPlatformSessionRepository,
     build_platform_session_repository,
 )
 
@@ -83,6 +85,16 @@ def test_build_platform_session_repository_requires_key_with_database_url() -> N
             database_url="postgresql://user:pass@localhost:5432/db",
             encryption_key="",
         )
+
+
+def test_build_platform_session_repository_disables_redis_cache_when_ttl_zero() -> None:
+    repository = build_platform_session_repository(
+        database_url="postgresql://user:pass@localhost:5432/db",
+        encryption_key=generate_encryption_key(),
+        session_cache_ttl_seconds=0,
+    )
+    assert isinstance(repository, PostgresEncryptedPlatformSessionRepository)
+    assert not isinstance(repository, CachedPlatformSessionRepository)
 
 
 @pytest.mark.asyncio

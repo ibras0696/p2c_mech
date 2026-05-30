@@ -287,6 +287,8 @@ def build_platform_session_repository(
             database_url=database_url,
             cipher=cipher,
         )
+        if session_cache_ttl_seconds <= 0:
+            return primary
         cache = RedisEncryptedPlatformSessionCache(
             cipher=cipher,
             ttl_seconds=session_cache_ttl_seconds,

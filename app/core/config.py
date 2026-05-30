@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     redis_db: int = Field(default=0, alias="REDIS_DB")
     redis_password: str = Field(default="", alias="REDIS_PASSWORD")
     redis_url: str = Field(default="", alias="REDIS_URL")
-    session_cache_ttl_seconds: int = Field(default=900, alias="SESSION_CACHE_TTL_SECONDS")
+    session_cache_ttl_seconds: int = Field(default=0, alias="SESSION_CACHE_TTL_SECONDS")
 
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_admin_ids: str = Field(default="", alias="TELEGRAM_ADMIN_IDS")
