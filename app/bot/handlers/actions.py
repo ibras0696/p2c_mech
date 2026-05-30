@@ -9,7 +9,9 @@ from app.bot.access import ensure_allowed_callback
 from app.bot.callbacks import edit_text
 from app.bot.session_state import PlatformSession
 from app.bot.ui import dashboard_keyboard, render_dashboard
+from app.core.config import get_settings
 from app.core.logging import get_logger
+from app.integrations.platform_ws.p2c_socket import P2CSocketClient, P2CSocketConfig
 from app.repositories.platform_session import PlatformSessionRepository
 from app.services.admin_access import AdminAccessService
 from app.services.agent_runtime_manager import AgentRuntimeManager, UserRuntime
@@ -52,6 +54,15 @@ def build_actions_router(
                 await callback.answer(validation_error, show_alert=True)
                 return
             assert session is not None
+            probe_error = await probe_socket_for_run(session=session)
+            if probe_error is not None:
+                logger.warning(
+                    "event=agent_run_blocked user_id=%s reason=socket_probe_failed error=%s",
+                    user_id,
+                    probe_error,
+                )
+                await callback.answer(f"Сокет недоступен: {probe_error}", show_alert=True)
+                return
             session = await refresh_session_cache_for_run(session=session, runtime=runtime)
             runtime.live_agent.set_session_hint(session)
             try:
@@ -120,6 +131,24 @@ def validate_session_for_run(session: PlatformSession | None) -> str | None:
         return "В сессии нет __cf_bm. Пришлите socket cURL заново."
     if datetime.now(UTC) - session.updated_at > SESSION_MAX_AGE:
         return "Сессия устарела. Пришлите socket cURL заново."
+    return None
+
+
+async def probe_socket_for_run(*, session: PlatformSession) -> str | None:
+    settings = get_settings()
+    if not settings.platform_ws_url:
+        return "WS URL не задан"
+    client = P2CSocketClient(
+        P2CSocketConfig(
+            url=settings.platform_ws_url,
+            cookie_header=session.cookie_header,
+            force_ipv4=settings.platform_force_ipv4,
+        )
+    )
+    try:
+        await client.probe_once()
+    except Exception as exc:
+        return type(exc).__name__
     return None
 
 

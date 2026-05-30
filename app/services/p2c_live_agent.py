@@ -804,7 +804,7 @@ class P2CLiveAgent:
         del received_at
         burst_size = 4
         stagger_seconds = 0.05
-        attempts: list[tuple[int, dict[str, object]] | Exception] = []
+        attempts: list[tuple[int, dict[str, object]] | BaseException] = []
 
         async def attempt_take(slot: int) -> tuple[int, dict[str, object]]:
             started = time.perf_counter()
@@ -832,14 +832,14 @@ class P2CLiveAgent:
             return_exceptions=True,
         )
         for result in raw_results:
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 attempts.append(result)
                 continue
             payment_id, trace = result
             self._payments_client.last_take_trace = trace
             return payment_id
 
-        first_error = next((item for item in attempts if isinstance(item, Exception)), None)
+        first_error = next((item for item in attempts if isinstance(item, BaseException)), None)
         if first_error is not None:
             raise first_error
         raise P2CPaymentsError("Take failed without explicit error")
