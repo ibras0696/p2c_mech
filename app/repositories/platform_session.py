@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 
 import asyncpg  # type: ignore[import-untyped]
-from redis import asyncio as redis_asyncio  # type: ignore[import-untyped]
+from redis import asyncio as redis_asyncio
 
 from app.bot.session_state import PlatformSession
 from app.core.crypto import SecretCipher
@@ -68,7 +68,7 @@ class RedisEncryptedPlatformSessionCache(PlatformSessionCache):
         self._ttl_seconds = max(ttl_seconds, 60)
         self._key_prefix = key_prefix
         if redis_url:
-            self._client = redis_asyncio.from_url(
+            self._client = redis_asyncio.from_url(  # type: ignore[no-untyped-call]
                 redis_url,
                 encoding="utf-8",
                 decode_responses=True,

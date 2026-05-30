@@ -85,7 +85,12 @@ async def test_e2e_socket_update_to_complete_flow() -> None:
     assert snapshot.active_orders[0].id == "7770001"
     assert snapshot.active_orders[0].method_id == "method-e2e"
     assert len(notifications) == 1
-    assert fake.take_calls == ["socket-e2e-1"]
+    assert fake.take_calls == [
+        "socket-e2e-1",
+        "socket-e2e-1",
+        "socket-e2e-1",
+        "socket-e2e-1",
+    ]
 
     await agent.complete_order("7770001")
     assert state.snapshot().active_count == 0

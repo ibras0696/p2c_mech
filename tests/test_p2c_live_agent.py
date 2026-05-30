@@ -144,7 +144,12 @@ async def test_live_agent_claims_and_notifies_owned_order() -> None:
     )
 
     snapshot = state.snapshot()
-    assert fake.take_calls == ["6a1206db7440f5cd5e5c69c7"]
+    assert fake.take_calls == [
+        "6a1206db7440f5cd5e5c69c7",
+        "6a1206db7440f5cd5e5c69c7",
+        "6a1206db7440f5cd5e5c69c7",
+        "6a1206db7440f5cd5e5c69c7",
+    ]
     assert snapshot.active_count == 1
     assert snapshot.active_orders[0].id == "3566992"
     assert snapshot.active_orders[0].method_id == "method-1"
@@ -803,7 +808,7 @@ async def test_live_agent_uses_session_hint_without_repository_read() -> None:
 
 
 @pytest.mark.asyncio
-async def test_live_agent_forces_single_take_attempt_even_when_burst_configured() -> None:
+async def test_live_agent_sends_four_take_attempts_with_stagger() -> None:
     state = InMemoryAgentState()
     state.run()
     repository = InMemoryPlatformSessionRepository()
@@ -832,7 +837,9 @@ async def test_live_agent_forces_single_take_attempt_even_when_burst_configured(
     fake = FakePaymentsClient()
     fake.take_side_effects = [
         (0.0, 3567999),
-        (0.0, P2CPaymentsError("must not be called")),
+        (0.0, P2CPaymentsError("already claimed 1")),
+        (0.0, P2CPaymentsError("already claimed 2")),
+        (0.0, P2CPaymentsError("already claimed 3")),
     ]
     agent._payments_client = fake  # type: ignore[assignment]
 
@@ -852,13 +859,13 @@ async def test_live_agent_forces_single_take_attempt_even_when_burst_configured(
     )
 
     snapshot = state.snapshot()
-    assert len(fake.take_calls) == 1
+    assert len(fake.take_calls) == 4
     assert snapshot.active_count == 1
     assert snapshot.active_orders[0].id == "3567999"
 
 
 @pytest.mark.asyncio
-async def test_live_agent_penalty_backoff_auto_resumes_waiting_mode() -> None:
+async def test_live_agent_merchant_penalized_is_not_special_state_transition() -> None:
     state = InMemoryAgentState()
     state.run()
     repository = InMemoryPlatformSessionRepository()
@@ -891,7 +898,25 @@ async def test_live_agent_penalty_backoff_auto_resumes_waiting_mode() -> None:
             P2CPaymentsError(
                 'POST /internal/v1/p2c/payments/take/xyz failed with status 403: {"error":"MerchantPenalized","retry_after":0}'
             ),
-        )
+        ),
+        (
+            0.0,
+            P2CPaymentsError(
+                'POST /internal/v1/p2c/payments/take/xyz failed with status 403: {"error":"MerchantPenalized","retry_after":0}'
+            ),
+        ),
+        (
+            0.0,
+            P2CPaymentsError(
+                'POST /internal/v1/p2c/payments/take/xyz failed with status 403: {"error":"MerchantPenalized","retry_after":0}'
+            ),
+        ),
+        (
+            0.0,
+            P2CPaymentsError(
+                'POST /internal/v1/p2c/payments/take/xyz failed with status 403: {"error":"MerchantPenalized","retry_after":0}'
+            ),
+        ),
     ]
     agent._payments_client = fake  # type: ignore[assignment]
 
@@ -909,10 +934,8 @@ async def test_live_agent_penalty_backoff_auto_resumes_waiting_mode() -> None:
         0.0,
         agent._pause_generation,  # type: ignore[attr-defined]
     )
-    await asyncio.sleep(0.05)
-
     snapshot = state.snapshot()
-    assert len(fake.take_calls) == 1
+    assert len(fake.take_calls) == 4
     assert snapshot.mode == AgentMode.WAITING
     assert snapshot.active_count == 0
 
@@ -937,7 +960,12 @@ async def test_live_agent_pauses_when_take_returns_401() -> None:
         notify_order_ready=lambda order: capture_order(order, notifications),
     )
     fake = FakePaymentsClient()
-    fake.take_side_effects = [(0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized"))]
+    fake.take_side_effects = [
+        (0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized")),
+        (0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized")),
+        (0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized")),
+        (0.0, P2CPaymentsError("POST /take failed with status 401: Unauthorized")),
+    ]
     agent._payments_client = fake  # type: ignore[assignment]
 
     await agent._process_event(
@@ -956,6 +984,7 @@ async def test_live_agent_pauses_when_take_returns_401() -> None:
     )
 
     snapshot = state.snapshot()
+    assert len(fake.take_calls) == 4
     assert snapshot.mode == AgentMode.PAUSED
     assert snapshot.active_count == 0
     assert notifications == []

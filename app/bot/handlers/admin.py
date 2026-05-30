@@ -8,7 +8,7 @@ from app.bot.access import ensure_owner_callback, ensure_owner_message
 from app.bot.callbacks import edit_text
 from app.bot.ui import owner_menu_keyboard
 from app.core.logging import get_logger
-from app.repositories.admin_registry import AdminRole
+from app.repositories.admin_registry import AdminRole, AdminUser
 from app.services.admin_access import AdminAccessService
 from app.services.agent_runtime_manager import AgentRuntimeManager
 
@@ -17,7 +17,7 @@ logger = get_logger(__name__)
 _owner_pending_action: dict[int, str] = {}
 
 
-def _render_admin_list(users) -> str:
+def _render_admin_list(users: list[AdminUser]) -> str:
     if not users:
         return "Активных админов нет."
     lines = ["Активные админы:"]

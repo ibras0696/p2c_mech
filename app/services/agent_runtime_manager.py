@@ -5,11 +5,13 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Protocol, cast
 from urllib.parse import quote
 
 from aiogram import Bot
-from redis import asyncio as redis_asyncio  # type: ignore[import-untyped]
+from redis import asyncio as redis_asyncio
 
+from app.bot.session_state import PlatformSession
 from app.bot.state import ActiveOrder, AgentSnapshot, ClaimMetrics, InMemoryAgentState
 from app.bot.ui import payment_confirm_keyboard, render_payment_confirmation
 from app.core.config import Settings
@@ -22,21 +24,29 @@ from app.services.p2c_live_agent import P2CLiveAgent
 logger = get_logger(__name__)
 
 
+class RedisDedupeClient(Protocol):
+    async def set(self, name: str, value: str, *, ex: int, nx: bool) -> object:
+        raise NotImplementedError
+
+    async def aclose(self) -> None:
+        raise NotImplementedError
+
+
 class ScopedPlatformSessionRepository(PlatformSessionRepository):
     def __init__(self, *, parent: PlatformSessionRepository, user_id: int) -> None:
         self._parent = parent
         self._user_id = user_id
 
-    async def save_for_user(self, user_id: int, session):
+    async def save_for_user(self, user_id: int, session: PlatformSession) -> PlatformSession:
         return await self._parent.save_for_user(user_id, session)
 
-    async def current_for_user(self, user_id: int):
+    async def current_for_user(self, user_id: int) -> PlatformSession | None:
         return await self._parent.current_for_user(user_id)
 
-    async def save(self, session):
+    async def save(self, session: PlatformSession) -> PlatformSession:
         return await self._parent.save_for_user(self._user_id, session)
 
-    async def current(self):
+    async def current(self) -> PlatformSession | None:
         return await self._parent.current_for_user(self._user_id)
 
 
@@ -337,17 +347,27 @@ class AgentRuntimeManager:
             )
         return len(runtimes)
 
-    def _build_redis_client(self):
+    def _build_redis_client(self) -> RedisDedupeClient | None:
         try:
             if self._settings.redis_url:
-                return redis_asyncio.from_url(self._settings.redis_url, encoding="utf-8", decode_responses=True)
-            return redis_asyncio.Redis(
-                host=self._settings.redis_host,
-                port=self._settings.redis_port,
-                db=self._settings.redis_db,
-                password=self._settings.redis_password or None,
-                encoding="utf-8",
-                decode_responses=True,
+                return cast(
+                    RedisDedupeClient,
+                    redis_asyncio.from_url(  # type: ignore[no-untyped-call]
+                        self._settings.redis_url,
+                        encoding="utf-8",
+                        decode_responses=True,
+                    ),
+                )
+            return cast(
+                RedisDedupeClient,
+                redis_asyncio.Redis(
+                    host=self._settings.redis_host,
+                    port=self._settings.redis_port,
+                    db=self._settings.redis_db,
+                    password=self._settings.redis_password or None,
+                    encoding="utf-8",
+                    decode_responses=True,
+                ),
             )
         except Exception:
             return None

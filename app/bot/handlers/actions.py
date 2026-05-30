@@ -10,8 +10,9 @@ from app.bot.callbacks import edit_text
 from app.bot.session_state import PlatformSession
 from app.bot.ui import dashboard_keyboard, render_dashboard
 from app.core.logging import get_logger
+from app.repositories.platform_session import PlatformSessionRepository
 from app.services.admin_access import AdminAccessService
-from app.services.agent_runtime_manager import AgentRuntimeManager
+from app.services.agent_runtime_manager import AgentRuntimeManager, UserRuntime
 
 SESSION_MAX_AGE = timedelta(minutes=30)
 logger = get_logger(__name__)
@@ -50,6 +51,7 @@ def build_actions_router(
                 )
                 await callback.answer(validation_error, show_alert=True)
                 return
+            assert session is not None
             session = await refresh_session_cache_for_run(session=session, runtime=runtime)
             runtime.live_agent.set_session_hint(session)
             try:
@@ -123,9 +125,9 @@ def validate_session_for_run(session: PlatformSession | None) -> str | None:
 
 async def refresh_session_cache_for_run(
     *,
-    runtime=None,
+    runtime: UserRuntime | None = None,
     user_id: int | None = None,
-    platform_session_repository=None,
+    platform_session_repository: PlatformSessionRepository | None = None,
     session: PlatformSession,
 ) -> PlatformSession:
     updated = PlatformSession(

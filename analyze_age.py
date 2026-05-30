@@ -57,7 +57,6 @@ def main() -> None:
         if not data:
             print(f"{label:8} n=0")
             return
-        data_s = sorted(data)
         print(
             f"{label:8} n={len(data):<4} "
             f"min={min(data):<6} med={int(median(data)):<7} "

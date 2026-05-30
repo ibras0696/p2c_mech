@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InaccessibleMessage, InlineKeyboardMarkup, Message
 
 
 def callback_data(callback: CallbackQuery) -> str:
@@ -16,7 +16,7 @@ async def edit_text(
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
     message = callback.message
-    if message is None:
+    if message is None or isinstance(message, InaccessibleMessage):
         return
     try:
         await message.edit_text(text, reply_markup=reply_markup)
@@ -49,7 +49,7 @@ async def _edit_caption_or_send_new(
 
 async def delete_message_safely(callback: CallbackQuery) -> None:
     message = callback.message
-    if message is None:
+    if message is None or isinstance(message, InaccessibleMessage):
         return
     try:
         await message.delete()
