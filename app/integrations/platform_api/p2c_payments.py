@@ -98,11 +98,13 @@ class P2CPaymentsClient:
         base_url: str,
         timeout_seconds: float = 10.0,
         take_http1: bool = False,
+        take_send_cf_cookie: bool = False,
     ) -> None:
         if not base_url:
             raise ValueError("Platform base URL is required")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
+        self._take_send_cf_cookie = take_send_cf_cookie
         self._client = self._build_client()
         self._take_clients: list[httpx.AsyncClient] = [
             self._build_client(http1_only=take_http1),
@@ -360,10 +362,14 @@ class P2CPaymentsClient:
             return self._take_clients[0]
         return self._take_clients[client_slot % len(self._take_clients)]
 
-    @staticmethod
-    def _cookie_for_request(*, method: str, session: PlatformSession) -> str:
-        # For take/complete/cancel we intentionally send only access_token.
+    def _cookie_for_request(self, *, method: str, session: PlatformSession) -> str:
+        # For take/complete/cancel we historically sent only access_token.
+        # With take_send_cf_cookie=True we send the full cookie (access_token
+        # + __cf_bm) like the browser does, so Cloudflare recognizes the client
+        # and routes the take via fast-path instead of re-running bot checks.
         if method.upper() == "POST" and session.access_token:
+            if self._take_send_cf_cookie:
+                return session.cookie_header
             return f"access_token={session.access_token}"
         return session.cookie_header
 

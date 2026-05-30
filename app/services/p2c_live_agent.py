@@ -57,6 +57,7 @@ class P2CLiveAgent:
         self._payments_client = P2CPaymentsClient(
             base_url=settings.platform_base_url,
             take_http1=settings.platform_take_http1,
+            take_send_cf_cookie=settings.platform_take_send_cf_cookie,
         )
         self._active_order_repository = active_order_repository or InMemoryActiveOrderRepository()
         self._user_id = user_id

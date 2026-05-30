@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     platform_take_burst_size: int = Field(default=1, alias="PLATFORM_TAKE_BURST_SIZE")
     platform_force_ipv4: bool = Field(default=True, alias="PLATFORM_FORCE_IPV4")
     platform_take_http1: bool = Field(default=False, alias="PLATFORM_TAKE_HTTP1")
+    # Слать полную cookie (access_token + __cf_bm) на take, как браузер.
+    # Гипотеза: запрос с валидным __cf_bm проходит Cloudflare по fast-path,
+    # а без него CF может прогонять bot-проверку заново на каждом take.
+    platform_take_send_cf_cookie: bool = Field(default=False, alias="PLATFORM_TAKE_SEND_CF_COOKIE")
     platform_take_health_enabled: bool = Field(default=True, alias="PLATFORM_TAKE_HEALTH_ENABLED")
     platform_take_health_interval_seconds: int = Field(
         default=5,
