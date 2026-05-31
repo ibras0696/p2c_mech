@@ -86,9 +86,14 @@ class P2CLiveAgent:
     def on_run(self) -> None:
         return
 
+    @property
+    def _warm_channels(self) -> int:
+        return max(1, int(getattr(self._settings, "platform_take_burst_size", 1)))
+
     async def prewarm_take_channels(self, session: PlatformSession) -> None:
+        channels = self._warm_channels
         try:
-            await self._payments_client.prewarm_take_clients(session=session, channels=1)
+            await self._payments_client.prewarm_take_clients(session=session, channels=channels)
         except Exception as exc:
             if self._is_auth_or_forbidden_error(exc):
                 raise P2CPaymentsError(
@@ -96,7 +101,7 @@ class P2CLiveAgent:
                 ) from exc
             logger.warning("p2c_live_agent_prewarm_failed error=%s", type(exc).__name__)
             return
-        logger.info("p2c_live_agent_prewarm_succeeded channels=1")
+        logger.info("p2c_live_agent_prewarm_succeeded channels=%d", channels)
 
     def set_session_hint(self, session: PlatformSession) -> None:
         self._session_l1_cache = session
@@ -164,7 +169,9 @@ class P2CLiveAgent:
                 session = await self._get_session()
                 if session is not None and session.cookie_header:
                     try:
-                        await self._payments_client.prewarm_take_clients(session=session, channels=1)
+                        await self._payments_client.prewarm_take_clients(
+                            session=session, channels=self._warm_channels
+                        )
                     except Exception as exc:
                         if self._is_auth_or_forbidden_error(exc):
                             self._pause_due_to_auth_error(
@@ -785,12 +792,39 @@ class P2CLiveAgent:
         session: PlatformSession,
         received_at: float,
     ) -> int:
-        return await self._take_with_dispatch_log(
-            socket_order_id=socket_order_id,
-            session=session,
-            received_at=received_at,
-            client_slot=0,
-        )
+        burst = max(1, int(getattr(self._settings, "platform_take_burst_size", 1)))
+        if burst == 1:
+            return await self._take_with_dispatch_log(
+                socket_order_id=socket_order_id,
+                session=session,
+                received_at=received_at,
+                client_slot=0,
+            )
+        # Параллельный burst: N запросов одновременно, побеждает первый успешный.
+        # Логика выше (фильтры, inflight, confirm) не меняется — это только сам POST.
+        tasks = [
+            asyncio.create_task(
+                self._take_with_dispatch_log(
+                    socket_order_id=socket_order_id,
+                    session=session,
+                    received_at=received_at,
+                    client_slot=slot,
+                )
+            )
+            for slot in range(burst)
+        ]
+        last_error: Exception | None = None
+        try:
+            for fut in asyncio.as_completed(tasks):
+                try:
+                    return await fut
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+            raise last_error if last_error is not None else P2CPaymentsError("take burst produced no result")
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
 
     async def _take_with_dispatch_log(
         self,
