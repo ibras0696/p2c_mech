@@ -15,7 +15,7 @@ def render_session_help() -> str:
             "URL должен быть таким:",
             "wss://app.send.tg/internal/v1/p2c-socket/?EIO=4&transport=websocket",
             "",
-            "Бот извлечет access_token и __cf_bm, затем удалит сообщение с секретами.",
+            "Бот извлечет access_token, __cf_bm и did, затем удалит сообщение с секретами.",
             "",
             "⚠️ Важно: обычный /p2c/orders cURL часто содержит только __cf_bm.",
             "Для сокета нужен access_token.",
@@ -26,6 +26,7 @@ def render_session_help() -> str:
 def render_session_status(session: PlatformSession) -> str:
     access_status = "есть" if session.access_token.strip() else "нет"
     cf_status = "есть" if session.cf_bm.strip() else "нет"
+    did_status = "есть" if session.did.strip() else "нет"
     return "\n".join(
         [
             "🔐 Статус сессии",
@@ -33,6 +34,7 @@ def render_session_status(session: PlatformSession) -> str:
             "",
             f"access_token: {access_status}",
             f"__cf_bm: {cf_status}",
+            f"did: {did_status}",
             f"updated_at: {session.updated_at.isoformat()}",
             "",
             "Значения токенов в интерфейсе не отображаются.",

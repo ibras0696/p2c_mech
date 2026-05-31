@@ -5,12 +5,13 @@ def test_session_store_extracts_socket_curl_cookies() -> None:
     store = InMemoryPlatformSessionStore()
 
     session = store.update_from_text(
-        "curl 'wss://example/ws' -b 'access_token=abc.def; __cf_bm=cloudflare-token'"
+        "curl 'wss://example/ws' -b 'access_token=abc.def; did=device-123; __cf_bm=cloudflare-token'"
     )
 
     assert session.access_token == "abc.def"
     assert session.cf_bm == "cloudflare-token"
-    assert session.cookie_header == "access_token=abc.def; __cf_bm=cloudflare-token"
+    assert session.did == "device-123"
+    assert session.cookie_header == "access_token=abc.def; did=device-123; __cf_bm=cloudflare-token"
 
 
 def test_session_store_accepts_cf_only_cookie() -> None:
@@ -20,3 +21,4 @@ def test_session_store_accepts_cf_only_cookie() -> None:
 
     assert session.access_token == ""
     assert session.cf_bm == "cf-only"
+    assert session.did == ""

@@ -77,12 +77,14 @@ def build_session_router(
         await edit_text(callback, render_session_status(session), session_keyboard())
         access_state = "ok" if session.access_token.strip() else "нет access_token"
         cf_state = "ok" if session.cf_bm.strip() else "нет __cf_bm"
-        await callback.answer(f"Сессия: {access_state}, {cf_state}")
+        did_state = "ok" if session.did.strip() else "нет did"
+        await callback.answer(f"Сессия: {access_state}, {cf_state}, {did_state}")
         logger.info(
-            "event=session_status user_id=%s has_access=%s has_cf=%s",
+            "event=session_status user_id=%s has_access=%s has_cf=%s has_did=%s",
             user_id,
             bool(session.access_token.strip()),
             bool(session.cf_bm.strip()),
+            bool(session.did.strip()),
         )
 
     @router.callback_query(F.data == "session:help")
@@ -130,6 +132,7 @@ def build_session_router(
             access_token=session.access_token,
             cf_bm=session.cf_bm,
             updated_at=datetime.now(UTC),
+            did=session.did,
         )
         try:
             await runtime.session_repository.save(refreshed)

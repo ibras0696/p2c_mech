@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 ACCESS_TOKEN_RE = re.compile(r"access_token=([^;\s'\\]+)")
 CF_BM_RE = re.compile(r"__cf_bm=([^;\s'\\]+)")
+DID_RE = re.compile(r"did=([^;\s'\\]+)")
 COOKIE_HEADER_RE = re.compile(r"(?:-b|--cookie)\s+['\"]([^'\"]+)['\"]")
 
 
@@ -14,12 +15,15 @@ class PlatformSession:
     access_token: str
     cf_bm: str
     updated_at: datetime
+    did: str = ""
 
     @property
     def cookie_header(self) -> str:
         cookies: list[str] = []
         if self.access_token:
             cookies.append(f"access_token={self.access_token}")
+        if self.did:
+            cookies.append(f"did={self.did}")
         if self.cf_bm:
             cookies.append(f"__cf_bm={self.cf_bm}")
         return "; ".join(cookies)
@@ -50,6 +54,7 @@ def parse_platform_session_from_text(text: str) -> PlatformSession:
     session = PlatformSession(
         access_token=extract_first(ACCESS_TOKEN_RE, cookie_text),
         cf_bm=extract_first(CF_BM_RE, cookie_text),
+        did=extract_first(DID_RE, cookie_text),
         updated_at=datetime.now(UTC),
     )
     if not session.access_token and not session.cf_bm:

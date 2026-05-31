@@ -163,6 +163,7 @@ async def refresh_session_cache_for_run(
         access_token=session.access_token,
         cf_bm=session.cf_bm,
         updated_at=datetime.now(UTC),
+        did=session.did,
     )
     try:
         if runtime is not None:

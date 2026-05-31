@@ -89,6 +89,7 @@ class RedisEncryptedPlatformSessionCache(PlatformSessionCache):
             return None
         access_token_encrypted = payload.get("access_token_encrypted", "")
         cf_bm_encrypted = payload.get("cf_bm_encrypted", "")
+        did_encrypted = payload.get("did_encrypted", "")
         updated_at_raw = payload.get("updated_at", "")
         if not updated_at_raw:
             return None
@@ -99,6 +100,7 @@ class RedisEncryptedPlatformSessionCache(PlatformSessionCache):
             access_token=self._cipher.decrypt(access_token_encrypted),
             cf_bm=self._cipher.decrypt(cf_bm_encrypted),
             updated_at=updated_at,
+            did=self._cipher.decrypt(did_encrypted),
         )
 
     async def set_for_user(self, user_id: int, session: PlatformSession) -> None:
@@ -108,6 +110,7 @@ class RedisEncryptedPlatformSessionCache(PlatformSessionCache):
             mapping={
                 "access_token_encrypted": self._cipher.encrypt(session.access_token),
                 "cf_bm_encrypted": self._cipher.encrypt(session.cf_bm),
+                "did_encrypted": self._cipher.encrypt(session.did),
                 "updated_at": session.updated_at.isoformat(),
             },
         )
@@ -187,17 +190,20 @@ class PostgresEncryptedPlatformSessionRepository(PlatformSessionRepository):
                 user_id,
                 access_token_encrypted,
                 cf_bm_encrypted,
+                did_encrypted,
                 updated_at
             )
-            values ($1, $2, $3, $4)
+            values ($1, $2, $3, $4, $5)
             on conflict (user_id) do update set
                 access_token_encrypted = excluded.access_token_encrypted,
                 cf_bm_encrypted = excluded.cf_bm_encrypted,
+                did_encrypted = excluded.did_encrypted,
                 updated_at = excluded.updated_at
             """,
             user_id,
             self._cipher.encrypt(session.access_token),
             self._cipher.encrypt(session.cf_bm),
+            self._cipher.encrypt(session.did),
             session.updated_at,
         )
         return session
@@ -207,7 +213,7 @@ class PostgresEncryptedPlatformSessionRepository(PlatformSessionRepository):
         await self._ensure_schema(pool)
         row = await pool.fetchrow(
             """
-            select access_token_encrypted, cf_bm_encrypted, updated_at
+            select access_token_encrypted, cf_bm_encrypted, did_encrypted, updated_at
             from platform_sessions
             where user_id = $1
             """
@@ -223,6 +229,7 @@ class PostgresEncryptedPlatformSessionRepository(PlatformSessionRepository):
             access_token=self._cipher.decrypt(row["access_token_encrypted"]),
             cf_bm=self._cipher.decrypt(row["cf_bm_encrypted"]),
             updated_at=updated_at,
+            did=self._cipher.decrypt(row["did_encrypted"]),
         )
 
     async def _get_pool(self) -> asyncpg.Pool:
@@ -239,8 +246,15 @@ class PostgresEncryptedPlatformSessionRepository(PlatformSessionRepository):
                 user_id bigint primary key,
                 access_token_encrypted text not null default '',
                 cf_bm_encrypted text not null default '',
+                did_encrypted text not null default '',
                 updated_at timestamptz not null
             )
+            """
+        )
+        await pool.execute(
+            """
+            alter table platform_sessions
+            add column if not exists did_encrypted text not null default ''
             """
         )
         await pool.execute(

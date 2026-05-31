@@ -108,11 +108,44 @@ async def test_post_requests_use_access_token_only_cookie() -> None:
         httpx.AsyncClient(transport=httpx.MockTransport(handler)),
         httpx.AsyncClient(transport=httpx.MockTransport(handler)),
     ]
-    session = PlatformSession(access_token="token123", cf_bm="cf456", updated_at=datetime.now(UTC))
+    session = PlatformSession(
+        access_token="token123",
+        cf_bm="cf456",
+        did="device789",
+        updated_at=datetime.now(UTC),
+    )
 
     await client.take(socket_order_id="abc", session=session)
 
     assert seen_cookie == "access_token=token123"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_post_take_send_cf_cookie_uses_full_cookie_with_did() -> None:
+    seen_cookie = ""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_cookie
+        seen_cookie = request.headers.get("cookie", "")
+        return httpx.Response(200, json={"id": 3566992})
+
+    client = P2CPaymentsClient(base_url="https://app.send.tg", take_send_cf_cookie=True)
+    client._take_clients = [  # type: ignore[assignment]
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    ]
+    session = PlatformSession(
+        access_token="token123",
+        cf_bm="cf456",
+        did="device789",
+        updated_at=datetime.now(UTC),
+    )
+
+    await client.take(socket_order_id="abc", session=session)
+
+    assert seen_cookie == "access_token=token123; did=device789; __cf_bm=cf456"
     await client.aclose()
 
 
@@ -127,9 +160,14 @@ async def test_get_requests_keep_full_cookie_header() -> None:
 
     client = P2CPaymentsClient(base_url="https://app.send.tg")
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[assignment]
-    session = PlatformSession(access_token="token123", cf_bm="cf456", updated_at=datetime.now(UTC))
+    session = PlatformSession(
+        access_token="token123",
+        cf_bm="cf456",
+        did="device789",
+        updated_at=datetime.now(UTC),
+    )
 
     await client.list_accounts(session=session)
 
-    assert seen_cookie == "access_token=token123; __cf_bm=cf456"
+    assert seen_cookie == "access_token=token123; did=device789; __cf_bm=cf456"
     await client.aclose()
