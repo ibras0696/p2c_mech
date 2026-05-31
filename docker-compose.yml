@@ -8,7 +8,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-agent_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-agent_db}
     ports:
-      - "8000:8000"
+      - "8010:8000"
     depends_on:
       - postgres
       - redis
