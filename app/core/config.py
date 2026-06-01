@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     platform_cookie_header: str = Field(default="", alias="PLATFORM_COOKIE_HEADER")
     platform_claim_from_snapshot: bool = Field(default=False, alias="PLATFORM_CLAIM_FROM_SNAPSHOT")
     platform_take_burst_size: int = Field(default=1, alias="PLATFORM_TAKE_BURST_SIZE")
+    platform_take_send_cf_cookie: bool = Field(
+        default=False,
+        alias="PLATFORM_TAKE_SEND_CF_COOKIE",
+    )
     platform_force_ipv4: bool = Field(default=True, alias="PLATFORM_FORCE_IPV4")
     platform_take_health_enabled: bool = Field(default=True, alias="PLATFORM_TAKE_HEALTH_ENABLED")
     platform_take_health_interval_seconds: int = Field(

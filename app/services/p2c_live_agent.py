@@ -54,7 +54,10 @@ class P2CLiveAgent:
         self._state = state
         self._session_repository = session_repository
         self._notify_order_ready = notify_order_ready
-        self._payments_client = P2CPaymentsClient(base_url=settings.platform_base_url)
+        self._payments_client = P2CPaymentsClient(
+            base_url=settings.platform_base_url,
+            take_send_cf_cookie=settings.platform_take_send_cf_cookie,
+        )
         self._active_order_repository = active_order_repository or InMemoryActiveOrderRepository()
         self._user_id = user_id
         self._lock = asyncio.Lock()
@@ -126,10 +129,15 @@ class P2CLiveAgent:
                     logger.warning("p2c_live_agent_ws_url_missing")
                     await asyncio.sleep(2)
                     continue
+                ws_cookie_header = (
+                    session.cookie_header
+                    if self._settings.platform_take_send_cf_cookie
+                    else session.cookie_header_access_only
+                )
                 client = P2CSocketClient(
                     P2CSocketConfig(
                         url=self._settings.platform_ws_url,
-                        cookie_header=session.cookie_header,
+                        cookie_header=ws_cookie_header,
                         force_ipv4=self._settings.platform_force_ipv4,
                     ),
                     on_message=self._on_socket_message,

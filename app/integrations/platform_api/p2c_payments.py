@@ -31,11 +31,18 @@ class P2CPaymentDetails:
 
 
 class P2CPaymentsClient:
-    def __init__(self, *, base_url: str, timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        timeout_seconds: float = 10.0,
+        take_send_cf_cookie: bool = False,
+    ) -> None:
         if not base_url:
             raise ValueError("Platform base URL is required")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
+        self._take_send_cf_cookie = take_send_cf_cookie
         self._client = self._build_client()
         self._take_clients: list[httpx.AsyncClient] = [
             self._build_client(),
@@ -278,10 +285,13 @@ class P2CPaymentsClient:
             return self._take_clients[0]
         return self._take_clients[client_slot % len(self._take_clients)]
 
-    @staticmethod
-    def _cookie_for_request(*, method: str, session: PlatformSession) -> str:
-        # For take/complete/cancel we intentionally send only access_token.
+    def _cookie_for_request(self, *, method: str, session: PlatformSession) -> str:
+        # For take/complete/cancel we send only access_token by default — sending
+        # __cf_bm there can route us through a slower Cloudflare bot check.
+        # PLATFORM_TAKE_SEND_CF_COOKIE=true forces the full cookie header instead.
         if method.upper() == "POST" and session.access_token:
+            if self._take_send_cf_cookie:
+                return session.cookie_header
             return f"access_token={session.access_token}"
         return session.cookie_header
 

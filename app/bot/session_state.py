@@ -24,6 +24,13 @@ class PlatformSession:
             cookies.append(f"__cf_bm={self.cf_bm}")
         return "; ".join(cookies)
 
+    @property
+    def cookie_header_access_only(self) -> str:
+        """Cookie header without __cf_bm — bypasses the Cloudflare bot check."""
+        if self.access_token:
+            return f"access_token={self.access_token}"
+        return ""
+
 
 class InMemoryPlatformSessionStore:
     def __init__(self) -> None:
