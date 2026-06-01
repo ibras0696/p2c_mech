@@ -95,11 +95,17 @@ class P2CPaymentsClient:
         socket_order_id: str,
         session: PlatformSession,
         client_slot: int | None = None,
+        payment_method_id: str = "",
     ) -> int:
+        # Bind the receiving account at take time. Working snipers send
+        # {"payment_method_id": <account_id>} in the body; without it the
+        # take is often rejected (InvalidStatus).
+        json_body = {"payment_method_id": payment_method_id} if payment_method_id else None
         payload = await self._request_json(
             method="POST",
             path=f"/internal/v1/p2c/payments/take/{socket_order_id}",
             session=session,
+            json_body=json_body,
             client=self._resolve_take_client(client_slot),
         )
         payment_id = extract_payment_id(payload)

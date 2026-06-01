@@ -93,8 +93,31 @@ class P2CLiveAgent:
     def _warm_channels(self) -> int:
         return max(1, int(getattr(self._settings, "platform_take_burst_size", 1)))
 
+    async def _ensure_account_method_id(self, session: PlatformSession) -> None:
+        """Resolve the receiving account id once at start so take() can bind it."""
+        if self._cached_account_method_id:
+            return
+        try:
+            accounts = await self._payments_client.list_accounts(session=session)
+        except Exception as exc:
+            logger.warning("p2c_account_resolve_failed error=%s", type(exc).__name__)
+            return
+        active_ids = [
+            str(a.get("id"))
+            for a in accounts
+            if a.get("id") and str(a.get("status", "")).lower() == "active"
+        ]
+        any_ids = [str(a.get("id")) for a in accounts if a.get("id")]
+        chosen = (active_ids or any_ids or [""])[0]
+        if chosen:
+            self._cached_account_method_id = chosen
+            logger.info("p2c_account_method_id_resolved id=%s", chosen)
+        else:
+            logger.warning("p2c_account_method_id_unresolved accounts=%d", len(accounts))
+
     async def prewarm_take_channels(self, session: PlatformSession) -> None:
         channels = self._warm_channels
+        await self._ensure_account_method_id(session)
         try:
             await self._payments_client.prewarm_take_clients(session=session, channels=channels)
         except Exception as exc:
@@ -857,6 +880,7 @@ class P2CLiveAgent:
                 socket_order_id=socket_order_id,
                 session=session,
                 client_slot=client_slot,
+                payment_method_id=self._cached_account_method_id,
             )
         except Exception as exc:
             logger.info(
