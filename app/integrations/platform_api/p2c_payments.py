@@ -26,28 +26,35 @@ def _make_trace() -> tuple[dict[str, float], Callable[[str, dict[str, Any]], Cor
     return marks, trace
 
 
-def _trace_breakdown(marks: dict[str, float]) -> tuple[bool, int, int | None]:
-    """Returns (conn_reused, tls_ms, server_wait_ms) from collected trace marks."""
+def _trace_breakdown(
+    marks: dict[str, float], started: float
+) -> tuple[bool, int, int | None, int | None]:
+    """Returns (conn_reused, tls_ms, pre_send_ms, server_ms) from collected trace marks.
+
+    pre_send_ms: from the request call to the first byte leaving the socket — large
+        here means our side stalled (connection pool / HTTP-2 stream / starved event loop).
+    server_ms: from request headers sent to response headers fully received — large
+        here means the network round-trip / server is slow (we arrived but waited).
+    """
     connect_started = marks.get("connection.connect_tcp.started")
     tls_complete = marks.get("connection.start_tls.complete")
     conn_reused = connect_started is None
     tls_ms = 0
     if connect_started is not None and tls_complete is not None:
         tls_ms = int((tls_complete - connect_started) * 1000)
-    send_done = (
-        marks.get("http2.send_request_headers.complete")
-        or marks.get("http11.send_request_headers.complete")
-        or marks.get("http2.send_request_body.complete")
-        or marks.get("http11.send_request_body.complete")
+    send_start = (
+        marks.get("http2.send_request_headers.started")
+        or marks.get("http11.send_request_headers.started")
     )
-    recv_start = (
-        marks.get("http2.receive_response_headers.started")
-        or marks.get("http11.receive_response_headers.started")
+    recv_done = (
+        marks.get("http2.receive_response_headers.complete")
+        or marks.get("http11.receive_response_headers.complete")
     )
-    server_wait_ms: int | None = None
-    if send_done is not None and recv_start is not None:
-        server_wait_ms = int((recv_start - send_done) * 1000)
-    return conn_reused, tls_ms, server_wait_ms
+    pre_send_ms = int((send_start - started) * 1000) if send_start is not None else None
+    server_ms: int | None = None
+    if send_start is not None and recv_done is not None:
+        server_ms = int((recv_done - send_start) * 1000)
+    return conn_reused, tls_ms, pre_send_ms, server_ms
 
 
 class P2CPaymentsError(RuntimeError):
@@ -311,13 +318,14 @@ class P2CPaymentsClient:
             method=method, url=url, headers=headers, json=json_body, extensions=extensions
         )
         if marks is not None:
-            conn_reused, tls_ms, server_wait_ms = _trace_breakdown(marks)
+            conn_reused, tls_ms, pre_send_ms, server_ms = _trace_breakdown(marks, started)
             logger.info(
-                "event=take_trace order=%s conn_reused=%s tls_ms=%d server_wait_ms=%s total_ms=%d status=%d proto=%s",
+                "event=take_trace order=%s conn_reused=%s tls_ms=%d pre_send_ms=%s server_ms=%s total_ms=%d status=%d proto=%s",
                 path.rsplit("/", 1)[-1],
                 conn_reused,
                 tls_ms,
-                server_wait_ms if server_wait_ms is not None else "na",
+                pre_send_ms if pre_send_ms is not None else "na",
+                server_ms if server_ms is not None else "na",
                 int((time.perf_counter() - started) * 1000),
                 response.status_code,
                 response.http_version,

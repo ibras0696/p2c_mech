@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -167,7 +168,11 @@ class P2CSocketClient:
                     logger.debug("p2c_socket_binary_message_ignored")
                     continue
 
-                self._log_packet_received(message)
+                # Per-frame diagnostic is expensive (2x json.loads + ~1KB log per
+                # frame) and starves the event loop on a busy feed, delaying the
+                # take POST. Keep it available only when log level is DEBUG.
+                if logger.isEnabledFor(logging.DEBUG):
+                    self._log_packet_received(message)
 
                 if message.startswith(ENGINE_OPEN) and not namespace_connected:
                     self._log_engine_open(message)
@@ -226,7 +231,7 @@ class P2CSocketClient:
         event = _extract_socket_event_name(message)
         order_count = _count_orders_in_packet(message)
         snippet = message[2:1002] if len(message) > 2 else message
-        logger.info(
+        logger.debug(
             "p2c_socket_packet_received prefix=%s len=%d event=%s order_count=%s raw=%s",
             prefix,
             len(message),
