@@ -2,12 +2,52 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 
 from app.bot.session_state import PlatformSession
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def _make_trace() -> tuple[dict[str, float], Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]]:
+    """Records the perf_counter timestamp of each httpcore trace event (first occurrence)."""
+    marks: dict[str, float] = {}
+
+    async def trace(name: str, info: dict[str, Any]) -> None:
+        if name not in marks:
+            marks[name] = time.perf_counter()
+
+    return marks, trace
+
+
+def _trace_breakdown(marks: dict[str, float]) -> tuple[bool, int, int | None]:
+    """Returns (conn_reused, tls_ms, server_wait_ms) from collected trace marks."""
+    connect_started = marks.get("connection.connect_tcp.started")
+    tls_complete = marks.get("connection.start_tls.complete")
+    conn_reused = connect_started is None
+    tls_ms = 0
+    if connect_started is not None and tls_complete is not None:
+        tls_ms = int((tls_complete - connect_started) * 1000)
+    send_done = (
+        marks.get("http2.send_request_headers.complete")
+        or marks.get("http11.send_request_headers.complete")
+        or marks.get("http2.send_request_body.complete")
+        or marks.get("http11.send_request_body.complete")
+    )
+    recv_start = (
+        marks.get("http2.receive_response_headers.started")
+        or marks.get("http11.receive_response_headers.started")
+    )
+    server_wait_ms: int | None = None
+    if send_done is not None and recv_start is not None:
+        server_wait_ms = int((recv_start - send_done) * 1000)
+    return conn_reused, tls_ms, server_wait_ms
 
 
 class P2CPaymentsError(RuntimeError):
@@ -260,7 +300,28 @@ class P2CPaymentsClient:
         if json_body is not None:
             headers["content-type"] = "application/json"
         url = f"{self._base_url}{path}"
-        response = await (client or self._client).request(method=method, url=url, headers=headers, json=json_body)
+        is_take = method.upper() == "POST" and "/take/" in path
+        marks: dict[str, float] | None = None
+        extensions: dict[str, Any] | None = None
+        if is_take:
+            marks, trace_fn = _make_trace()
+            extensions = {"trace": trace_fn}
+        started = time.perf_counter()
+        response = await (client or self._client).request(
+            method=method, url=url, headers=headers, json=json_body, extensions=extensions
+        )
+        if marks is not None:
+            conn_reused, tls_ms, server_wait_ms = _trace_breakdown(marks)
+            logger.info(
+                "event=take_trace order=%s conn_reused=%s tls_ms=%d server_wait_ms=%s total_ms=%d status=%d proto=%s",
+                path.rsplit("/", 1)[-1],
+                conn_reused,
+                tls_ms,
+                server_wait_ms if server_wait_ms is not None else "na",
+                int((time.perf_counter() - started) * 1000),
+                response.status_code,
+                response.http_version,
+            )
         if response.status_code >= 400:
             raise P2CPaymentsError(
                 f"{method} {path} failed with status {response.status_code}: {response.text[:300]}"
