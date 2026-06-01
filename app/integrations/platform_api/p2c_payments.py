@@ -292,10 +292,7 @@ class P2CPaymentsClient:
             else f"access_token={session.access_token}"
         )
         headers = {
-            "accept": "application/json, text/plain, */*",
             "cookie": cookie,
-            "origin": self._base_url,
-            "referer": f"{self._base_url}/p2c/orders",
         }
         url = f"{self._base_url}{path}"
         started = time.perf_counter()
