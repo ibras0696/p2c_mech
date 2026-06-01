@@ -48,6 +48,8 @@ class P2CPaymentsClient:
             self._build_client(),
             self._build_client(),
             self._build_client(),
+            self._build_client(),
+            self._build_client(),
         ]
 
     def _build_client(self) -> httpx.AsyncClient:
