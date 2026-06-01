@@ -41,6 +41,12 @@ class Settings(BaseSettings):
         default=False,
         alias="PLATFORM_TAKE_SEND_CF_COOKIE",
     )
+    # WS upgrade is stricter at Cloudflare than the take POST: it needs __cf_bm.
+    # Default True so the socket sends the same full cookie the working REST GET uses.
+    platform_ws_send_cf_cookie: bool = Field(
+        default=True,
+        alias="PLATFORM_WS_SEND_CF_COOKIE",
+    )
     platform_force_ipv4: bool = Field(default=True, alias="PLATFORM_FORCE_IPV4")
     platform_take_health_enabled: bool = Field(default=True, alias="PLATFORM_TAKE_HEALTH_ENABLED")
     platform_take_health_interval_seconds: int = Field(

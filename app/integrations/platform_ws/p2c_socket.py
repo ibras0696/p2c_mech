@@ -87,8 +87,9 @@ class P2CSocketClient:
             except Exception as exc:
                 delay = self._backoff.next_delay()
                 logger.warning(
-                    "p2c_socket_reconnect_scheduled error=%s delay_seconds=%.2f",
+                    "p2c_socket_reconnect_scheduled error=%s%s delay_seconds=%.2f",
                     type(exc).__name__,
+                    _describe_ws_error(exc),
                     delay,
                 )
                 await self._sleep_or_stop(delay)
@@ -233,6 +234,36 @@ class P2CSocketClient:
             order_count,
             snippet,
         )
+
+
+def _describe_ws_error(exc: Exception) -> str:
+    """Extracts the HTTP status/body from a websockets handshake rejection (InvalidStatus)."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    parts: list[str] = []
+    if status is not None:
+        parts.append(f" status={status}")
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        try:
+            server = headers.get("server")
+            cf_ray = headers.get("cf-ray")
+        except Exception:  # noqa: BLE001
+            server = cf_ray = None
+        if server:
+            parts.append(f" server={server}")
+        if cf_ray:
+            parts.append(f" cf_ray={cf_ray}")
+    body = getattr(response, "body", None)
+    if body:
+        if isinstance(body, (bytes, bytearray)):
+            text = bytes(body).decode("utf-8", "replace")
+        else:
+            text = str(body)
+        parts.append(f" body={text[:200]!r}")
+    return "".join(parts)
 
 
 def build_cookie_header(

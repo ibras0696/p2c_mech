@@ -154,7 +154,7 @@ class P2CLiveAgent:
                     continue
                 ws_cookie_header = (
                     session.cookie_header
-                    if self._settings.platform_take_send_cf_cookie
+                    if self._settings.platform_ws_send_cf_cookie
                     else session.cookie_header_access_only
                 )
                 client = P2CSocketClient(
