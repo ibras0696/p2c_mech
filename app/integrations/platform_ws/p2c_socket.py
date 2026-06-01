@@ -218,21 +218,20 @@ class P2CSocketClient:
         )
 
     def _log_packet_received(self, message: str) -> None:
+        # DIAGNOSTIC (temporary): log EVERY socket event at INFO with order count
+        # and a raw payload snippet, so we can see: is there an earlier event than
+        # list:update? is the feed batched/throttled? what status do orders have?
         prefix = message[:2]
         event = _extract_socket_event_name(message)
-        if event == "list:update":
-            logger.info(
-                "p2c_socket_packet_received prefix=%s len=%d event=%s",
-                prefix,
-                len(message),
-                event,
-            )
-            return
-        logger.debug(
-            "p2c_socket_packet_received prefix=%s len=%d event=%s",
+        order_count = _count_orders_in_packet(message)
+        snippet = message[2:1002] if len(message) > 2 else message
+        logger.info(
+            "p2c_socket_packet_received prefix=%s len=%d event=%s order_count=%s raw=%s",
             prefix,
             len(message),
             event,
+            order_count,
+            snippet,
         )
 
 
@@ -263,3 +262,25 @@ def _extract_socket_event_name(message: str) -> str:
     if isinstance(payload, list) and payload and isinstance(payload[0], str):
         return payload[0]
     return ""
+
+
+def _count_orders_in_packet(message: str) -> str:
+    """DIAGNOSTIC: how many orders a 42[...] packet carries (batch detection)."""
+    if not message.startswith("42"):
+        return "-"
+    try:
+        payload = json.loads(message[2:])
+    except json.JSONDecodeError:
+        return "-"
+    if not (isinstance(payload, list) and len(payload) >= 2):
+        return "-"
+    data = payload[1]
+    if isinstance(data, list):
+        return str(len(data))
+    if isinstance(data, dict):
+        for key in ("orders", "data", "items", "list", "payments"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return str(len(value))
+        return "1"
+    return "-"
