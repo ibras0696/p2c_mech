@@ -3,58 +3,22 @@ from __future__ import annotations
 import asyncio
 import socket
 import time
-from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+from curl_cffi.const import CurlHttpVersion
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
 
 from app.bot.session_state import PlatformSession
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Browser impersonation used for take POSTs — gives us a real Chrome TLS
+# fingerprint instead of httpx's, which Cloudflare can detect as a bot.
+_CURL_IMPERSONATE = "chrome131"
 
-def _make_trace() -> tuple[dict[str, float], Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]]]:
-    """Records the perf_counter timestamp of each httpcore trace event (first occurrence)."""
-    marks: dict[str, float] = {}
-
-    async def trace(name: str, info: dict[str, Any]) -> None:
-        if name not in marks:
-            marks[name] = time.perf_counter()
-
-    return marks, trace
-
-
-def _trace_breakdown(
-    marks: dict[str, float], started: float
-) -> tuple[bool, int, int | None, int | None]:
-    """Returns (conn_reused, tls_ms, pre_send_ms, server_ms) from collected trace marks.
-
-    pre_send_ms: from the request call to the first byte leaving the socket — large
-        here means our side stalled (connection pool / HTTP-2 stream / starved event loop).
-    server_ms: from request headers sent to response headers fully received — large
-        here means the network round-trip / server is slow (we arrived but waited).
-    """
-    connect_started = marks.get("connection.connect_tcp.started")
-    tls_complete = marks.get("connection.start_tls.complete")
-    conn_reused = connect_started is None
-    tls_ms = 0
-    if connect_started is not None and tls_complete is not None:
-        tls_ms = int((tls_complete - connect_started) * 1000)
-    send_start = (
-        marks.get("http2.send_request_headers.started")
-        or marks.get("http11.send_request_headers.started")
-    )
-    recv_done = (
-        marks.get("http2.receive_response_headers.complete")
-        or marks.get("http11.receive_response_headers.complete")
-    )
-    pre_send_ms = int((send_start - started) * 1000) if send_start is not None else None
-    server_ms: int | None = None
-    if send_start is not None and recv_done is not None:
-        server_ms = int((recv_done - send_start) * 1000)
-    return conn_reused, tls_ms, pre_send_ms, server_ms
 
 
 class P2CPaymentsError(RuntimeError):
@@ -90,16 +54,11 @@ class P2CPaymentsClient:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout_seconds
         self._take_send_cf_cookie = take_send_cf_cookie
-        self._client = self._build_client()
-        self._take_clients: list[httpx.AsyncClient] = [
-            self._build_client(),
-            self._build_client(),
-            self._build_client(),
-            self._build_client(),
-            self._build_client(),
-        ]
+        self._client = self._build_httpx_client()
+        # curl-cffi session for take POSTs: Chrome TLS fingerprint + HTTP/2 keepalive.
+        self._curl_session = CurlAsyncSession(impersonate=_CURL_IMPERSONATE, max_clients=1)
 
-    def _build_client(self) -> httpx.AsyncClient:
+    def _build_httpx_client(self) -> httpx.AsyncClient:
         http2_enabled = _is_http2_supported()
         try:
             transport = httpx.AsyncHTTPTransport(
@@ -132,8 +91,7 @@ class P2CPaymentsClient:
         )
 
     async def aclose(self) -> None:
-        for take_client in self._take_clients:
-            await take_client.aclose()
+        await self._curl_session.close()
         await self._client.aclose()
 
     async def take(
@@ -144,11 +102,9 @@ class P2CPaymentsClient:
         client_slot: int | None = None,
         payment_method_id: str = "",  # accepted but not sent (A/B: body disabled)
     ) -> int:
-        payload = await self._request_json(
-            method="POST",
+        payload = await self._curl_take(
             path=f"/internal/v1/p2c/payments/take/{socket_order_id}",
             session=session,
-            client=self._resolve_take_client(client_slot),
         )
         payment_id = extract_payment_id(payload)
         if payment_id is None:
@@ -156,14 +112,13 @@ class P2CPaymentsClient:
         return payment_id
 
     async def prewarm_take_clients(self, *, session: PlatformSession, channels: int = 3) -> None:
+        """Warm up the curl session by making a cheap GET (establishes TLS + HTTP/2)."""
         if channels <= 0:
             return
-        channel_count = min(channels, len(self._take_clients))
-        tasks = [
-            asyncio.create_task(self._prewarm_take_client(session=session, client_slot=idx))
-            for idx in range(channel_count)
-        ]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            await self._curl_get_prewarm(session=session)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("event=prewarm_curl_failed error=%s", exc)
 
     async def get_payment(self, *, payment_id: int, session: PlatformSession) -> P2CPaymentDetails:
         payload = await self._request_json(
@@ -307,29 +262,9 @@ class P2CPaymentsClient:
         if json_body is not None:
             headers["content-type"] = "application/json"
         url = f"{self._base_url}{path}"
-        is_take = method.upper() == "POST" and "/take/" in path
-        marks: dict[str, float] | None = None
-        extensions: dict[str, Any] | None = None
-        if is_take:
-            marks, trace_fn = _make_trace()
-            extensions = {"trace": trace_fn}
-        started = time.perf_counter()
         response = await (client or self._client).request(
-            method=method, url=url, headers=headers, json=json_body, extensions=extensions
+            method=method, url=url, headers=headers, json=json_body
         )
-        if marks is not None:
-            conn_reused, tls_ms, pre_send_ms, server_ms = _trace_breakdown(marks, started)
-            logger.info(
-                "event=take_trace order=%s conn_reused=%s tls_ms=%d pre_send_ms=%s server_ms=%s total_ms=%d status=%d proto=%s",
-                path.rsplit("/", 1)[-1],
-                conn_reused,
-                tls_ms,
-                pre_send_ms if pre_send_ms is not None else "na",
-                server_ms if server_ms is not None else "na",
-                int((time.perf_counter() - started) * 1000),
-                response.status_code,
-                response.http_version,
-            )
         if response.status_code >= 400:
             raise P2CPaymentsError(
                 f"{method} {path} failed with status {response.status_code}: {response.text[:300]}"
@@ -342,20 +277,73 @@ class P2CPaymentsClient:
             raise P2CPaymentsError(f"{method} {path} returned non-JSON body") from exc
         return body if isinstance(body, dict) else None
 
-    async def _prewarm_take_client(self, *, session: PlatformSession, client_slot: int) -> None:
-        client = self._resolve_take_client(client_slot)
-        await self._request(
-            method="GET",
-            path="/internal/v1/p2c/accounts",
-            session=session,
-            expect_json=False,
-            client=client,
+    async def _curl_take(
+        self,
+        *,
+        path: str,
+        session: PlatformSession,
+    ) -> dict[str, Any]:
+        """POST via curl-cffi with Chrome TLS fingerprint + HTTP/2."""
+        if not session.cookie_header:
+            raise P2CPaymentsError("Platform session cookie is missing")
+        cookie = (
+            session.cookie_header
+            if self._take_send_cf_cookie
+            else f"access_token={session.access_token}"
         )
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "cookie": cookie,
+            "origin": self._base_url,
+            "referer": f"{self._base_url}/p2c/orders",
+        }
+        url = f"{self._base_url}{path}"
+        started = time.perf_counter()
+        response = await self._curl_session.post(
+            url,
+            headers=headers,
+            http_version=CurlHttpVersion.V2TLS,
+            timeout=self._timeout,
+            allow_redirects=False,
+        )
+        total_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "event=take_curl order=%s status=%d total_ms=%d",
+            path.rsplit("/", 1)[-1],
+            response.status_code,
+            total_ms,
+        )
+        if response.status_code >= 400:
+            raise P2CPaymentsError(
+                f"POST {path} failed with status {response.status_code}: {response.text[:300]}"
+            )
+        try:
+            body: Any = response.json()
+        except ValueError as exc:
+            raise P2CPaymentsError(f"POST {path} returned non-JSON body") from exc
+        if not isinstance(body, dict):
+            raise P2CPaymentsError(f"POST {path} returned unexpected payload")
+        return body
 
-    def _resolve_take_client(self, client_slot: int | None) -> httpx.AsyncClient:
-        if client_slot is None:
-            return self._take_clients[0]
-        return self._take_clients[client_slot % len(self._take_clients)]
+    async def _curl_get_prewarm(self, *, session: PlatformSession) -> None:
+        """Warm up curl session: GET /accounts establishes TLS + HTTP/2 connection."""
+        if not session.cookie_header:
+            return
+        headers = {
+            "accept": "application/json, text/plain, */*",
+            "cookie": session.cookie_header,
+            "origin": self._base_url,
+            "referer": f"{self._base_url}/p2c/orders",
+        }
+        url = f"{self._base_url}/internal/v1/p2c/accounts"
+        await self._curl_session.get(
+            url,
+            headers=headers,
+            http_version=CurlHttpVersion.V2TLS,
+            timeout=self._timeout,
+            allow_redirects=False,
+        )
+        logger.info("event=prewarm_curl_succeeded")
 
     def _cookie_for_request(self, *, method: str, session: PlatformSession) -> str:
         # For take/complete/cancel we send only access_token by default — sending
