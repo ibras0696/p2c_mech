@@ -10,8 +10,10 @@ services:
     ports:
       - "8010:8000"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     networks:
       - appnet
     restart: unless-stopped
@@ -28,8 +30,10 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-agent_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-agent_db}
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     networks:
       - appnet
     restart: unless-stopped
@@ -78,6 +82,12 @@ services:
     networks:
       - appnet
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agent_user} -d ${POSTGRES_DB:-agent_db}"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
 
   redis:
     image: redis:7

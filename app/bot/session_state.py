@@ -7,6 +7,25 @@ from datetime import UTC, datetime
 ACCESS_TOKEN_RE = re.compile(r"access_token=([^;\s'\\]+)")
 CF_BM_RE = re.compile(r"__cf_bm=([^;\s'\\]+)")
 COOKIE_HEADER_RE = re.compile(r"(?:-b|--cookie)\s+['\"]([^'\"]+)['\"]")
+# Optional leading label so a user can tag a pasted session, e.g. "acc=ivan curl ...".
+LABEL_RE = re.compile(r"^\s*(?:acc|account|label)\s*=\s*([A-Za-z0-9_\-]{1,32})\b", re.IGNORECASE)
+
+
+def extract_account_label(text: str) -> str | None:
+    """Pull an optional `acc=<label>` tag a user may prepend to a pasted session.
+
+    Lets multiple sessions map to multiple accounts (§2.1). Returns None when
+    no tag is present so callers can fall back to a default account id.
+    """
+    match = LABEL_RE.search(text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def default_account_id(user_id: int) -> str:
+    """Stable per-user default account id when the user does not tag a label."""
+    return f"acc{user_id}"
 
 
 @dataclass(frozen=True)

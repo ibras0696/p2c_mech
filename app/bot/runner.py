@@ -3,6 +3,7 @@ import asyncio
 from aiogram import Bot, Dispatcher
 
 from app.bot.access import parse_admin_ids
+from app.bot.agent_client import AgentClient
 from app.bot.router import build_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging, get_logger
@@ -16,6 +17,30 @@ from app.services.runtime_registry import clear_runtime_provider, set_runtime_pr
 
 configure_logging()
 logger = get_logger(__name__)
+
+_DB_RETRY_ATTEMPTS = 15   # ~45 seconds total — enough for postgres to start
+_DB_RETRY_DELAY_S = 3
+
+
+async def _bootstrap_with_retry(access_service: AdminAccessService, owner_ids: set[int]) -> None:
+    """Retry bootstrap_owners until Postgres is ready (startup race with compose)."""
+    for attempt in range(1, _DB_RETRY_ATTEMPTS + 1):
+        try:
+            await access_service.bootstrap_owners(owner_ids)
+            if attempt > 1:
+                logger.info("db_ready attempt=%d", attempt)
+            return
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= _DB_RETRY_ATTEMPTS:
+                raise
+            logger.warning(
+                "db_not_ready attempt=%d/%d error=%s retrying_in=%ds",
+                attempt,
+                _DB_RETRY_ATTEMPTS,
+                exc,
+                _DB_RETRY_DELAY_S,
+            )
+            await asyncio.sleep(_DB_RETRY_DELAY_S)
 
 
 async def main() -> None:
@@ -42,7 +67,7 @@ async def main() -> None:
     active_order_repository = build_active_order_repository(database_url=settings.database_url)
     admin_registry_repository = build_admin_registry_repository(database_url=settings.database_url)
     access_service = AdminAccessService(repository=admin_registry_repository)
-    await access_service.bootstrap_owners(owner_ids)
+    await _bootstrap_with_retry(access_service, owner_ids)
 
     runtime_manager = AgentRuntimeManager(
         settings=settings,
@@ -54,11 +79,17 @@ async def main() -> None:
     await runtime_manager.start()
     set_runtime_provider(runtime_manager)
 
+    agent_client = AgentClient(
+        base_url=settings.agent_api_url,
+        timeout=settings.agent_api_timeout_seconds,
+    )
+
     dispatcher = Dispatcher()
     dispatcher.include_router(
         build_router(
             access_service=access_service,
             runtime_manager=runtime_manager,
+            agent_client=agent_client,
         )
     )
     logger.info("bot_started owners=%s", ",".join(str(item) for item in sorted(owner_ids)))

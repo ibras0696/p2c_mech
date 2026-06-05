@@ -18,12 +18,14 @@ def dashboard_keyboard(snapshot: AgentSnapshot, *, is_owner: bool = False) -> In
     builder.button(text="⚙️ Лимит", callback_data="limit:menu")
     builder.button(text="💵 Суммы", callback_data="filters:amount")
     builder.button(text="🔐 Сессия", callback_data="session:status")
+    builder.button(text="📊 Статистика", callback_data="stats:view")
+    builder.button(text="🛰 Статус", callback_data="agent:status")
     builder.button(text="ℹ️ Помощь", callback_data="panel:help")
     if is_owner:
         builder.button(text="👑 Владелец", callback_data="admin:menu")
-        builder.adjust(2, 2, 2, 2, 1)
+        builder.adjust(2, 2, 2, 2, 2, 1)
     else:
-        builder.adjust(2, 2, 2, 2)
+        builder.adjust(2, 2, 2, 2, 2)
     return builder.as_markup()
 
 
@@ -64,6 +66,15 @@ def session_keyboard() -> InlineKeyboardMarkup:
     builder.button(text="❔ Как обновить", callback_data="session:help")
     builder.button(text="⬅️ Назад", callback_data="panel:refresh")
     builder.adjust(2, 1, 1)
+    return builder.as_markup()
+
+
+def stats_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔄 Обновить", callback_data="stats:view")
+    builder.button(text="🛰 Статус", callback_data="agent:status")
+    builder.button(text="⬅️ Назад", callback_data="panel:refresh")
+    builder.adjust(2, 1)
     return builder.as_markup()
 
 

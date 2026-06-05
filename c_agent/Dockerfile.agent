@@ -1,0 +1,28 @@
+# Dockerfile.agent — builds the P2C C-agent (Linux).
+#
+# Stage 1 needs only a C toolchain + cmake + git (yyjson is fetched by CMake).
+# Later milestones add: libwebsockets-dev, libhiredis-dev, libssl-dev, and
+# curl-impersonate (prebuilt release tarball) — uncomment when those modules
+# are enabled in CMakeLists.txt.
+FROM debian:bookworm-slim AS build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git ca-certificates pkg-config \
+        libwebsockets-dev libcurl4-openssl-dev libssl-dev libhiredis-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY CMakeLists.txt ./
+COPY include ./include
+COPY src ./src
+
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build build -j"$(nproc)"
+
+# --- runtime image ----------------------------------------------------
+FROM debian:bookworm-slim AS runtime
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates libwebsockets17 libcurl4 libhiredis0.14 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /build/build/p2c_agent /usr/local/bin/p2c_agent
+ENTRYPOINT ["/usr/local/bin/p2c_agent"]

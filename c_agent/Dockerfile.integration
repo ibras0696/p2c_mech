@@ -1,0 +1,38 @@
+# Dockerfile.integration — combined image for the full-stack local test:
+# the FastAPI supervisor (Python app) PLUS the compiled C agent binary in one
+# image, because the supervisor spawns the agent as a child process over
+# stdin/stdout pipes (they must share a container).
+#
+# Build context MUST be the repo root:
+#   docker build -f c_agent/Dockerfile.integration -t p2c_app_agent:dev .
+
+# --- stage 1: build the C agent ---------------------------------------
+FROM debian:bookworm-slim AS agentbuild
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake git ca-certificates pkg-config \
+        libwebsockets-dev libcurl4-openssl-dev libssl-dev libhiredis-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY c_agent/CMakeLists.txt ./
+COPY c_agent/include ./include
+COPY c_agent/src ./src
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j"$(nproc)"
+
+# --- stage 2: python app + agent binary + agent runtime libs ----------
+# Pin bookworm so the agent runtime lib package names match stage 1.
+FROM python:3.12-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git \
+        libwebsockets17 libcurl4 libhiredis0.14 \
+    && rm -rf /var/lib/apt/lists/*
+COPY pyproject.toml ./
+COPY docs ./docs
+COPY app ./app
+COPY tests ./tests
+COPY c_agent ./c_agent
+RUN python -m pip install --upgrade pip && pip install -e .
+COPY --from=agentbuild /build/build/p2c_agent /usr/local/bin/p2c_agent
+EXPOSE 8000
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -6,20 +6,27 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.access import ensure_allowed_callback, ensure_allowed_message
+from app.bot.agent_client import AgentClient, AgentClientError
 from app.bot.callbacks import callback_data, edit_text
+from app.bot.session_state import default_account_id
+from app.bot.state import AgentSnapshot
 from app.bot.ui import (
     amount_filter_keyboard,
     dashboard_keyboard,
     render_amount_filter_panel,
     render_dashboard,
 )
+from app.core.logging import get_logger
 from app.services.admin_access import AdminAccessService
 from app.services.agent_runtime_manager import AgentRuntimeManager
+
+logger = get_logger(__name__)
 
 
 def build_filters_router(
     access_service: AdminAccessService,
     runtime_manager: AgentRuntimeManager,
+    agent_client: AgentClient,
 ) -> Router:
     router = Router()
 
@@ -43,9 +50,10 @@ def build_filters_router(
                 Decimal(min_raw),
                 Decimal(max_raw),
             )
+        remote_note = await _push_filter_remote(agent_client, callback.from_user.id, snapshot)
         is_owner = await access_service.is_owner(callback.from_user.id)
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
-        await callback.answer("Фильтр суммы обновлен")
+        await callback.answer(remote_note or "Фильтр суммы обновлен", show_alert=bool(remote_note))
 
     @router.message(F.text.regexp(r"^\s*\d+(?:[.,]\d+)?\s+\d+(?:[.,]\d+)?\s*$"))
     async def handle_amount_filter_text(message: Message) -> None:
@@ -61,10 +69,33 @@ def build_filters_router(
         runtime = await runtime_manager.get_or_create(message.from_user.id)
         async with runtime.action_lock:
             snapshot = await runtime_manager.set_amount_filter(message.from_user.id, min_amount, max_amount)
+        remote_note = await _push_filter_remote(agent_client, message.from_user.id, snapshot)
         is_owner = await access_service.is_owner(message.from_user.id)
-        await message.answer(render_dashboard(snapshot), reply_markup=dashboard_keyboard(snapshot, is_owner=is_owner))
+        text = render_dashboard(snapshot)
+        if remote_note:
+            text = f"{text}\n\n{remote_note}"
+        await message.answer(text, reply_markup=dashboard_keyboard(snapshot, is_owner=is_owner))
 
     return router
+
+
+async def _push_filter_remote(
+    agent_client: AgentClient,
+    user_id: int,
+    snapshot: AgentSnapshot,
+) -> str | None:
+    """POST /agent/filter for the user's account (§7); returns a warning on failure."""
+    account = default_account_id(user_id)
+    try:
+        await agent_client.set_filter(
+            account=account,
+            min_amount=int(snapshot.min_amount),
+            max_amount=int(snapshot.max_amount),
+        )
+    except AgentClientError as exc:
+        logger.warning("event=filter_push_remote_failed user_id=%s error=%s", user_id, exc.message)
+        return f"⚠️ Фильтр сохранён локально, но снайпер не обновлён: {exc.message}"
+    return None
 
 
 def parse_amount_range(text: str) -> tuple[Decimal, Decimal]:

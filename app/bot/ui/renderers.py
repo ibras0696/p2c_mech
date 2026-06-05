@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 from app.bot.state import ActiveOrder, AgentSnapshot
 from app.bot.ui.labels import MODE_LABELS
@@ -82,6 +83,85 @@ def render_amount_filter_panel(snapshot: AgentSnapshot) -> str:
             "Пример: 100 500",
         ]
     )
+
+
+def render_stats(payload: dict[str, Any]) -> str:
+    """Render GET /stats response. Works regardless of agent state (§6.2)."""
+    account = payload.get("account") or "все аккаунты"
+    period = payload.get("period") or "all"
+    live = payload.get("live") or {}
+    aggregate = payload.get("aggregate") or {}
+
+    orders_seen = live.get("orders_seen", 0)
+    takes = aggregate.get("takes", live.get("takes", 0))
+    wins = aggregate.get("wins", live.get("wins", 0))
+    losses = aggregate.get("losses", 0)
+    win_rate = aggregate.get("win_rate", 0.0) or 0.0
+    p50 = aggregate.get("p50_http_ms")
+    p99 = aggregate.get("p99_http_ms")
+
+    lines = [
+        "📊 Статистика",
+        "━━━━━━━━━━━━━━",
+        "",
+        f"👤 Аккаунт: {account}",
+        f"🗓 Период: {period}",
+        "",
+        f"👀 Ордеров замечено: {orders_seen}",
+        f"🎯 Попыток (takes): {takes}",
+        f"🏆 Побед: {wins}",
+        f"❌ Поражений: {losses}",
+        f"📈 Win-rate: {win_rate * 100:.1f}%",
+        f"⚡ http_ms p50/p99: {_fmt_ms(p50)} / {_fmt_ms(p99)}",
+    ]
+
+    recent = aggregate.get("recent") or []
+    if recent:
+        lines.append("")
+        lines.append("🧾 Последние события:")
+        for event in recent[:10]:
+            acc = event.get("account", "?")
+            kind = event.get("kind", "?")
+            status = event.get("status")
+            http_ms = event.get("http_ms")
+            parts = [f"• {acc} | {kind}"]
+            if status is not None:
+                parts.append(f"status={status}")
+            if http_ms is not None:
+                parts.append(f"{http_ms}ms")
+            lines.append(" | ".join(parts))
+    return "\n".join(lines)
+
+
+def render_agent_status(payload: dict[str, Any]) -> str:
+    """Render GET /agent/status response."""
+    running = payload.get("running", False)
+    accounts = payload.get("accounts") or []
+    lines = [
+        "🛰 Статус агента",
+        "━━━━━━━━━━━━━━",
+        "",
+        f"⚙️ Запущен: {'да' if running else 'нет'}",
+        f"👥 Аккаунтов: {len(accounts)}",
+    ]
+    if accounts:
+        lines.append("")
+        for acc in accounts:
+            name = acc.get("account", "?")
+            ws = "🔗" if acc.get("ws_connected") else "🔌"
+            mode = acc.get("mode", "?")
+            uptime = acc.get("uptime")
+            suffix = f" | uptime {uptime}s" if uptime is not None else ""
+            lines.append(f"{ws} {name} | {mode}{suffix}")
+    return "\n".join(lines)
+
+
+def _fmt_ms(value: object) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, float):
+        return f"{value:.0f}"
+    return str(value)
 
 
 def render_help() -> str:

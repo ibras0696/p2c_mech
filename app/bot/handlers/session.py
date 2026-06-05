@@ -7,8 +7,14 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.access import ensure_allowed_callback, ensure_allowed_message
+from app.bot.agent_client import AgentClient, AgentClientError
 from app.bot.callbacks import edit_text
-from app.bot.session_state import PlatformSession, parse_platform_session_from_text
+from app.bot.session_state import (
+    PlatformSession,
+    default_account_id,
+    extract_account_label,
+    parse_platform_session_from_text,
+)
 from app.bot.ui import session_keyboard
 from app.bot.ui.session import render_session_help, render_session_status
 from app.core.config import get_settings
@@ -23,6 +29,7 @@ logger = get_logger(__name__)
 def build_session_router(
     access_service: AdminAccessService,
     runtime_manager: AgentRuntimeManager,
+    agent_client: AgentClient,
 ) -> Router:
     router = Router()
 
@@ -55,7 +62,16 @@ def build_session_router(
             logger.warning("event=session_save_failed user_id=%s error=%s", user_id, type(exc).__name__)
             return
         logger.info("event=session_saved user_id=%s", user_id)
-        await message.answer(render_session_status(session), reply_markup=session_keyboard())
+        # Push the parsed session to the supervisor (§7). An optional `acc=<label>`
+        # prefix lets one user map several sessions to several accounts; default
+        # is a stable per-user id so we never hardcode a single account.
+        label = extract_account_label(message.text)
+        account = label or default_account_id(user_id)
+        remote_note = await _push_session_remote(agent_client, account=account, session=session)
+        status_text = render_session_status(session)
+        if remote_note:
+            status_text = f"{status_text}\n\n{remote_note}"
+        await message.answer(status_text, reply_markup=session_keyboard())
 
     @router.callback_query(F.data == "session:status")
     async def callback_session_status(callback: CallbackQuery) -> None:
@@ -142,6 +158,31 @@ def build_session_router(
         await callback.answer("Сокет подключился, сессия обновлена.", show_alert=True)
 
     return router
+
+
+async def _push_session_remote(
+    agent_client: AgentClient,
+    *,
+    account: str,
+    session: PlatformSession,
+) -> str | None:
+    """Refresh the account's session on the supervisor (POST /agent/account, §7).
+
+    Returns a short note to append to the reply; never raises so a supervisor
+    outage cannot break the (still-working) local session save.
+    """
+    try:
+        await agent_client.add_account(
+            account=account,
+            access_token=session.access_token,
+            cookie_header=session.cookie_header,
+            label=account,
+        )
+    except AgentClientError as exc:
+        logger.warning("event=session_push_remote_failed account=%s error=%s", account, exc.message)
+        return f"⚠️ Сессия сохранена локально, но снайпер не обновлён: {exc.message}"
+    logger.info("event=session_push_remote_applied account=%s", account)
+    return f"✅ Сессия отправлена снайперу (аккаунт {account})."
 
 
 async def _delete_secret_message(message: Message) -> None:

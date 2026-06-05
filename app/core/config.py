@@ -53,6 +53,17 @@ class Settings(BaseSettings):
         default=5,
         alias="PLATFORM_TAKE_HEALTH_INTERVAL_SECONDS",
     )
+    # C-agent supervisor (docs/C_AGENT_SPEC_RU.md §4.8, §5).
+    # Base URL the Telegram bot uses to reach the FastAPI supervisor over HTTP.
+    # Defaults to the docker-compose service name "app"; use http://localhost:8000 locally.
+    agent_api_url: str = Field(default="http://app:8000", alias="AGENT_API_URL")
+    agent_api_timeout_seconds: float = Field(default=10.0, alias="AGENT_API_TIMEOUT_SECONDS")
+    agent_bin: str = Field(default="p2c_agent", alias="AGENT_BIN")
+    agent_impersonate: str = Field(default="chrome131", alias="AGENT_IMPERSONATE")
+    session_ttl_seconds: int = Field(default=1500, alias="SESSION_TTL_SECONDS")
+    account_ttl_seconds: int = Field(default=1800, alias="ACCOUNT_TTL_SECONDS")
+    stat_http_ms_max_samples: int = Field(default=1000, alias="STAT_HTTP_MS_MAX_SAMPLES")
+
     runtime_idle_ttl_seconds: int = Field(default=900, alias="RUNTIME_IDLE_TTL_SECONDS")
     runtime_cleanup_interval_seconds: int = Field(default=60, alias="RUNTIME_CLEANUP_INTERVAL_SECONDS")
     playwright_headless: bool = Field(default=True, alias="PLAYWRIGHT_HEADLESS")

@@ -1,0 +1,82 @@
+# docker-compose.local.yml — prod-like local stack, real send.tg URLs, no mock.
+# Uses the prod image (p2c_app:local) built with -DP2C_USE_IMPERSONATE.
+#
+# Build prod image once (amd64 = VPS arch):
+#   docker build --platform linux/amd64 -t p2c_app:local .
+#
+# Bring up:
+#   docker compose -f docker-compose.local.yml up -d
+#
+# Rebuild after code changes:
+#   docker build --platform linux/amd64 -t p2c_app:local . && \
+#   docker compose -f docker-compose.local.yml up -d --no-deps app bot
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: agent_db
+      POSTGRES_USER: agent_user
+      POSTGRES_PASSWORD: change_me
+    volumes:
+      - local_postgres_data:/var/lib/postgresql/data
+    networks: [localnet]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent_user -d agent_db"]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  redis:
+    image: redis:7
+    networks: [localnet]
+    restart: unless-stopped
+
+  app:
+    image: p2c_app:local
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env                         # PLATFORM_WS_URL, PLATFORM_BASE_URL, SESSION_ENCRYPTION_KEY, etc.
+    environment:
+      DATABASE_URL: "postgresql://agent_user:change_me@postgres:5432/agent_db"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_URL: ""                  # force REDIS_HOST resolution, not URL
+      AGENT_BIN: /usr/local/bin/p2c_agent
+      AGENT_IMPERSONATE: chrome131
+    ports:
+      - "8010:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [localnet]
+    restart: unless-stopped
+
+  bot:
+    image: p2c_app:local
+    command: python -m app.bot.runner
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: "postgresql://agent_user:change_me@postgres:5432/agent_db"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_URL: ""
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks: [localnet]
+    restart: unless-stopped
+
+volumes:
+  local_postgres_data:
+
+networks:
+  localnet:
+    driver: bridge
+    enable_ipv6: false

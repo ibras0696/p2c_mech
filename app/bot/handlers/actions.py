@@ -6,8 +6,10 @@ from aiogram import F, Router
 from aiogram.types import CallbackQuery
 
 from app.bot.access import ensure_allowed_callback
+from app.bot.agent_client import AgentClient, AgentClientError, FilterPayload
 from app.bot.callbacks import edit_text
-from app.bot.session_state import PlatformSession
+from app.bot.session_state import PlatformSession, default_account_id
+from app.bot.state import AgentSnapshot
 from app.bot.ui import dashboard_keyboard, render_dashboard
 from app.core.logging import get_logger
 from app.services.admin_access import AdminAccessService
@@ -20,6 +22,7 @@ logger = get_logger(__name__)
 def build_actions_router(
     access_service: AdminAccessService,
     runtime_manager: AgentRuntimeManager,
+    agent_client: AgentClient,
 ) -> Router:
     router = Router()
 
@@ -64,6 +67,14 @@ def build_actions_router(
                 return
             runtime.live_agent.on_run()
             snapshot = await runtime_manager.run(user_id)
+        # Thin HTTP client (§7): start the supervisor, then push this account's
+        # session + filters so the C-agent spins up a socket for it.
+        remote_warning = await _start_remote_agent(
+            agent_client=agent_client,
+            user_id=user_id,
+            session=session,
+            snapshot=snapshot,
+        )
         latency_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
         logger.info(
             "event=agent_run_applied user_id=%s latency_ms=%d mode=%s active_count=%d",
@@ -74,7 +85,7 @@ def build_actions_router(
         )
         is_owner = await access_service.is_owner(user_id)
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
-        await callback.answer("Агент запущен")
+        await callback.answer(remote_warning or "Агент запущен", show_alert=bool(remote_warning))
 
     @router.callback_query(F.data == "agent:pause")
     async def callback_pause(callback: CallbackQuery) -> None:
@@ -94,6 +105,12 @@ def build_actions_router(
         runtime = await runtime_manager.get_or_create(user_id)
         async with runtime.action_lock:
             snapshot = await runtime_manager.pause(user_id)
+        remote_warning: str | None = None
+        try:
+            await agent_client.stop()
+        except AgentClientError as exc:
+            remote_warning = exc.message
+            logger.warning("event=agent_stop_remote_failed user_id=%s error=%s", user_id, exc.message)
         latency_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
         logger.info(
             "event=agent_pause_applied user_id=%s latency_ms=%d mode=%s active_count=%d",
@@ -104,9 +121,49 @@ def build_actions_router(
         )
         is_owner = await access_service.is_owner(user_id)
         await edit_text(callback, render_dashboard(snapshot), dashboard_keyboard(snapshot, is_owner=is_owner))
-        await callback.answer("Агент на паузе")
+        await callback.answer(remote_warning or "Агент на паузе", show_alert=bool(remote_warning))
 
     return router
+
+
+async def _start_remote_agent(
+    *,
+    agent_client: AgentClient,
+    user_id: int,
+    session: PlatformSession,
+    snapshot: AgentSnapshot,
+) -> str | None:
+    """POST /agent/start then /agent/account for this user's account (§7).
+
+    Returns a user-facing warning string on failure, or None on success.
+    The local runtime has already been started, so a remote failure is
+    surfaced as a non-fatal warning instead of crashing the bot.
+    """
+    account = default_account_id(user_id)
+    filters = FilterPayload(
+        min_amount=int(snapshot.min_amount),
+        max_amount=int(snapshot.max_amount),
+        currencies=[],
+    )
+    try:
+        await agent_client.start()
+        await agent_client.add_account(
+            account=account,
+            access_token=session.access_token,
+            cookie_header=session.cookie_header,
+            label=account,
+            filters=filters,
+        )
+    except AgentClientError as exc:
+        logger.warning(
+            "event=agent_start_remote_failed user_id=%s account=%s error=%s",
+            user_id,
+            account,
+            exc.message,
+        )
+        return exc.message
+    logger.info("event=agent_start_remote_applied user_id=%s account=%s", user_id, account)
+    return None
 
 
 def validate_session_for_run(session: PlatformSession | None) -> str | None:

@@ -34,6 +34,7 @@ cmd = base if show_all else f'{base} | grep --line-buffered "{FILTER}"'
 
 chan = c.get_transport().open_session()
 chan.get_pty()
+cmd = cmd.encode("ascii", "ignore").decode("ascii")  # paramiko on py3.7 chokes on stray surrogates
 chan.exec_command(cmd)
 
 try:
