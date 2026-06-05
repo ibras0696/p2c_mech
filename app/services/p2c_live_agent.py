@@ -138,6 +138,18 @@ class P2CLiveAgent:
         await self._payments_client.aclose()
 
     async def run_forever(self) -> None:
+        if not self._settings.platform_python_socket_enabled:
+            # The C agent owns the hot path (socket + detect + take). The Python
+            # live agent stays passive here: it never opens a competing socket
+            # and never issues a take. It still serves operator-driven API
+            # actions (complete/cancel) and order state. See settings note on
+            # platform_python_socket_enabled.
+            logger.info(
+                "p2c_live_agent_socket_disabled user_id=%s reason=c_agent_authority",
+                self._user_id,
+            )
+            await self._stop_event.wait()
+            return
         self._start_take_health_task_if_needed()
         while not self._stop_event.is_set():
             try:

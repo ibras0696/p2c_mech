@@ -48,6 +48,15 @@ class Settings(BaseSettings):
         alias="PLATFORM_WS_SEND_CF_COOKIE",
     )
     platform_force_ipv4: bool = Field(default=True, alias="PLATFORM_FORCE_IPV4")
+    # The C agent is the sole hot-path authority: it opens the WS socket, detects
+    # orders and issues the take POST. The Python P2CLiveAgent must NOT open a
+    # competing socket or take orders (that caused a double socket + double take
+    # and lost every race). Keep this False in production; set True only for a
+    # pure-Python deployment without the C agent.
+    platform_python_socket_enabled: bool = Field(
+        default=False,
+        alias="PLATFORM_PYTHON_SOCKET_ENABLED",
+    )
     platform_take_health_enabled: bool = Field(default=True, alias="PLATFORM_TAKE_HEALTH_ENABLED")
     platform_take_health_interval_seconds: int = Field(
         default=5,

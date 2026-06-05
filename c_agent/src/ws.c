@@ -192,6 +192,8 @@ void ws_run(p2c_ws_t *w, volatile int *running, int max_seconds)
     char fullpath[1024];
     snprintf(fullpath, sizeof(fullpath), "/%s", path);
 
+    log_info("ws parsed: addr=%s port=%d ssl=%d path=%.60s", addr, port, use_ssl, fullpath);
+
     struct lws_client_connect_info ci;
     memset(&ci, 0, sizeof(ci));
     ci.context = w->ctx;
@@ -201,7 +203,7 @@ void ws_run(p2c_ws_t *w, volatile int *running, int max_seconds)
     ci.host = addr;
     ci.origin = NULL;  /* we add Origin ourselves in APPEND_HANDSHAKE_HEADER */
     ci.protocol = PROTOCOLS[0].name;
-    ci.ssl_connection = use_ssl ? LCCSCF_USE_SSL : 0;
+    ci.ssl_connection = use_ssl ? (LCCSCF_USE_SSL | LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK) : 0;
     ci.pwsi = &w->wsi;
 
     w->connected = 0;
@@ -209,21 +211,23 @@ void ws_run(p2c_ws_t *w, volatile int *running, int max_seconds)
     w->out_head = w->out_tail = 0;
     w->rx_len = 0;
 
+    log_info("ws lws_client_connect_via_info calling addr=%s", addr);
     if (!lws_client_connect_via_info(&ci)) {
-        log_err("ws connect failed: %s", w->cfg->ws_url);
+        log_err("ws connect failed (lws returned NULL): %s", w->cfg->ws_url);
         return;
     }
 
     log_info("ws connecting: %s", w->cfg->ws_url);
 
     time_t deadline = max_seconds > 0 ? time(NULL) + max_seconds : 0;
-    /* If Cloudflare hangs the HTTP Upgrade (bot-detection hold), lws_service
-     * loops silently forever.  Break out after 20s if still not connected. */
-    time_t connect_deadline = time(NULL) + 20;
+    /* Break out if still not connected after 15s — Cloudflare may hang the
+     * HTTP Upgrade on bot-detection.  lws_service loops silently in that case. */
+    time_t connect_deadline = time(NULL) + 15;
     while (*running && w->close_code == 0) {
-        if (lws_service(w->ctx, 50) < 0) break;
+        int sr = lws_service(w->ctx, 100);
+        if (sr < 0) { log_warn("ws lws_service returned %d, breaking", sr); break; }
         if (!w->connected && time(NULL) >= connect_deadline) {
-            log_err("ws connect timeout (20s): %s", w->cfg->ws_url);
+            log_err("ws connect timeout (15s): %s", w->cfg->ws_url);
             break;
         }
         if (deadline && time(NULL) >= deadline) {
@@ -231,6 +235,7 @@ void ws_run(p2c_ws_t *w, volatile int *running, int max_seconds)
             break;
         }
     }
+    log_info("ws loop exited connected=%d close_code=%d", w->connected, w->close_code);
     if (w->cb.on_disconnected) w->cb.on_disconnected(w->user, w->close_code ? w->close_code : 1000);
 }
 
