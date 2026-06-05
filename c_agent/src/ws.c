@@ -80,8 +80,15 @@ static int cb_ws(struct lws *wsi, enum lws_callback_reasons reason,
 {
     struct p2c_ws *w = (struct p2c_ws *)lws_context_user(lws_get_context(wsi));
 
+    /* DIAG: trace every non-spammy callback so we can see exactly where the
+     * upgrade stalls (TLS done? request sent? response received?). */
+    if (reason != LWS_CALLBACK_CLIENT_RECEIVE &&
+        reason != LWS_CALLBACK_CLIENT_WRITEABLE)
+        log_info("ws cb reason=%d", (int)reason);
+
     switch (reason) {
     case LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER: {
+        log_info("ws tls handshake complete, appending upgrade headers");
         unsigned char **p = (unsigned char **)in, *end = (*p) + len;
         if (w->cookie[0] &&
             lws_add_http_header_by_name(wsi, (const unsigned char *)"Cookie:",
@@ -159,6 +166,11 @@ p2c_ws_t *ws_create(const p2c_config_t *cfg, const char *cookie_header,
     w->cb = *cb;
     w->user = user;
     if (cookie_header) snprintf(w->cookie, sizeof(w->cookie), "%s", cookie_header);
+
+    /* DIAG: verbose libwebsockets logging (TLS, client handshake, headers) so
+     * the exact stall point in the WS upgrade is visible in agent_stderr. */
+    lws_set_log_level(LLL_ERR | LLL_WARN | LLL_NOTICE | LLL_INFO |
+                      LLL_DEBUG | LLL_CLIENT | LLL_HEADER, NULL);
 
     struct lws_context_creation_info info;
     memset(&info, 0, sizeof(info));
