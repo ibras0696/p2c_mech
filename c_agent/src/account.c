@@ -204,7 +204,10 @@ static void *take_thread(void *arg)
         atomic_fetch_sub(&a->inflight, 1);
 
         ev_take_result(a->id, item.id, res.status, res.http_ms, res.payment_id);
-        if (res.status == 200 && res.payment_id >= 0) {
+        /* HTTP 200 == we won the order. payment_id is only needed for the
+         * post-take confirm/complete; a parse miss must NOT downgrade a real
+         * win to a loss. */
+        if (res.status == 200) {
             atomic_fetch_add(&a->wins, 1);
             ev_claim_won(a->id, item.id, res.payment_id);
         } else {

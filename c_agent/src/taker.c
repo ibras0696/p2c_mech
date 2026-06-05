@@ -172,15 +172,34 @@ int taker_post(p2c_taker_t *t, const char *order_id, take_result_t *out)
     curl_easy_getinfo(t->curl, CURLINFO_RESPONSE_CODE, &code);
     out->status = (int)code;
 
-    /* parse body */
+    /* Log the raw body on a win (and any non-400) so the real payment_id field
+     * shape is visible — the take 200 body schema isn't documented yet. */
+    if (code == 200 || (code != 400 && code != 0))
+        log_info("take status=%ld body=%.300s", code,
+                 t->resp_len ? t->resp : "(empty)");
+
+    /* parse body: try several id field names + string ids + nested data{} */
     if (t->resp_len > 0) {
         yyjson_doc *doc = yyjson_read(t->resp, t->resp_len, 0);
         if (doc) {
             yyjson_val *root = yyjson_doc_get_root(doc);
             if (yyjson_is_obj(root)) {
-                yyjson_val *pid = yyjson_obj_get(root, "payment_id");
-                if (pid && yyjson_is_int(pid)) out->payment_id = (long)yyjson_get_sint(pid);
+                static const char *id_keys[] = {"payment_id", "paymentId", "id"};
+                yyjson_val *scopes[2] = { root, yyjson_obj_get(root, "data") };
+                for (int s = 0; s < 2 && out->payment_id < 0; ++s) {
+                    if (!yyjson_is_obj(scopes[s])) continue;
+                    for (size_t k = 0; k < sizeof(id_keys)/sizeof(id_keys[0]); ++k) {
+                        yyjson_val *pid = yyjson_obj_get(scopes[s], id_keys[k]);
+                        if (!pid) continue;
+                        if (yyjson_is_int(pid)) { out->payment_id = (long)yyjson_get_sint(pid); break; }
+                        if (yyjson_is_str(pid)) {
+                            long v = atol(yyjson_get_str(pid));
+                            if (v > 0) { out->payment_id = v; break; }
+                        }
+                    }
+                }
                 const char *reason = yyjson_get_str(yyjson_obj_get(root, "reason"));
+                if (!reason) reason = yyjson_get_str(yyjson_obj_get(root, "error"));
                 if (reason) snprintf(out->reason, sizeof(out->reason), "%s", reason);
             }
             yyjson_doc_free(doc);
