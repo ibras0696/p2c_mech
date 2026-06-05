@@ -22,7 +22,7 @@ extern CURLcode curl_easy_impersonate(CURL *handle, const char *target,
 struct p2c_taker {
     const p2c_config_t *cfg;
     CURL  *curl;
-    char   cookie_hdr[P2C_COOKIE_MAX + 16];  /* "Cookie: ..." */
+    char   cookie_raw[P2C_COOKIE_MAX];       /* "access_token=..; __cf_bm=.." */
     char   url_prefix[512];                  /* base + take path prefix     */
     char   resp[RESP_MAX];
     size_t resp_len;
@@ -40,10 +40,13 @@ static size_t on_body(char *ptr, size_t size, size_t nmemb, void *userdata)
     return n; /* consume all, even if we truncated our copy */
 }
 
-static void rebuild_cookie(struct p2c_taker *t, const char *cookie_header)
+/* Seed the cookie engine. curl merges these into its in-memory jar; from then
+ * on it captures rotated __cf_bm from Set-Cookie and sends the freshest one. */
+static void apply_cookie(struct p2c_taker *t, const char *cookie_header)
 {
-    snprintf(t->cookie_hdr, sizeof(t->cookie_hdr), "Cookie: %s",
+    snprintf(t->cookie_raw, sizeof(t->cookie_raw), "%s",
              cookie_header ? cookie_header : "");
+    if (t->curl) curl_easy_setopt(t->curl, CURLOPT_COOKIE, t->cookie_raw);
 }
 
 p2c_taker_t *taker_create(const p2c_config_t *cfg, const char *cookie_header)
@@ -56,9 +59,12 @@ p2c_taker_t *taker_create(const p2c_config_t *cfg, const char *cookie_header)
 
     snprintf(t->url_prefix, sizeof(t->url_prefix),
              "%s/internal/v1/p2c/payments/take/", cfg->base_url);
-    rebuild_cookie(t, cookie_header);
 
     CURL *c = t->curl;
+    /* Enable the in-memory cookie engine BEFORE seeding: "" turns on cookie
+     * parsing/storage so Set-Cookie (rotated __cf_bm) is captured and resent. */
+    curl_easy_setopt(c, CURLOPT_COOKIEFILE, "");
+    apply_cookie(t, cookie_header);
     curl_easy_setopt(c, CURLOPT_POST, 1L);
     curl_easy_setopt(c, CURLOPT_POSTFIELDS, "");
     curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, 0L);
@@ -85,7 +91,7 @@ p2c_taker_t *taker_create(const p2c_config_t *cfg, const char *cookie_header)
 
 void taker_set_cookie(p2c_taker_t *t, const char *cookie_header)
 {
-    rebuild_cookie(t, cookie_header);
+    apply_cookie(t, cookie_header);
 }
 
 void taker_prewarm(p2c_taker_t *t)
@@ -134,9 +140,9 @@ int taker_post(p2c_taker_t *t, const char *order_id, take_result_t *out)
     char url[600];
     snprintf(url, sizeof(url), "%s%s", t->url_prefix, order_id);
 
+    /* Cookies are sent by the cookie engine (captures rotated __cf_bm); we only
+     * suppress Expect: 100-continue here. */
     struct curl_slist *hdrs = NULL;
-    hdrs = curl_slist_append(hdrs, t->cookie_hdr);
-    /* tell libcurl not to add Expect: 100-continue */
     hdrs = curl_slist_append(hdrs, "Expect:");
 
     t->resp_len = 0;
