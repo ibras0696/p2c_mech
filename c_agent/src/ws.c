@@ -214,9 +214,18 @@ void ws_run(p2c_ws_t *w, volatile int *running, int max_seconds)
         return;
     }
 
+    log_info("ws connecting: %s", w->cfg->ws_url);
+
     time_t deadline = max_seconds > 0 ? time(NULL) + max_seconds : 0;
+    /* If Cloudflare hangs the HTTP Upgrade (bot-detection hold), lws_service
+     * loops silently forever.  Break out after 20s if still not connected. */
+    time_t connect_deadline = time(NULL) + 20;
     while (*running && w->close_code == 0) {
         if (lws_service(w->ctx, 50) < 0) break;
+        if (!w->connected && time(NULL) >= connect_deadline) {
+            log_err("ws connect timeout (20s): %s", w->cfg->ws_url);
+            break;
+        }
         if (deadline && time(NULL) >= deadline) {
             log_info("ws refresh deadline reached, reconnecting");
             break;
