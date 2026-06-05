@@ -22,6 +22,7 @@ typedef struct p2c_taker p2c_taker_t;
 p2c_taker_t *taker_create(const p2c_config_t *cfg, const char *cookie_header);
 void taker_set_cookie(p2c_taker_t *t, const char *cookie_header); /* hot-swap */
 void taker_prewarm(p2c_taker_t *t);                               /* open conn+TLS */
+void taker_keepalive(p2c_taker_t *t);   /* cheap HEAD to keep the conn hot (idle) */
 int  taker_post(p2c_taker_t *t, const char *order_id, take_result_t *out);
 void taker_destroy(p2c_taker_t *t);
 

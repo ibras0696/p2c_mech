@@ -69,6 +69,13 @@ p2c_taker_t *taker_create(const p2c_config_t *cfg, const char *cookie_header)
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 0L);
     curl_easy_setopt(c, CURLOPT_TIMEOUT_MS, (long)cfg->take_timeout_ms);
     curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    /* Keep the take connection hot: cache DNS long, enable TCP keepalive, and
+     * let curl reuse the pooled H2 connection across takes. The real warmth is
+     * maintained by taker_keepalive() pinging the host while idle. */
+    curl_easy_setopt(c, CURLOPT_DNS_CACHE_TIMEOUT, 600L);
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPALIVE, 1L);
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPIDLE, 15L);
+    curl_easy_setopt(c, CURLOPT_TCP_KEEPINTVL, 15L);
 #ifdef P2C_USE_IMPERSONATE
     /* curl-impersonate: apply Chrome TLS/H2 fingerprint */
     curl_easy_impersonate(c, cfg->impersonate, 1);
@@ -98,6 +105,24 @@ void taker_prewarm(p2c_taker_t *t)
     snprintf(url, sizeof(url), "%s", t->cfg->base_url);
     t->resp_len = 0;
     curl_easy_setopt(t->curl, CURLOPT_URL, url);
+    curl_easy_setopt(t->curl, CURLOPT_NOBODY, 1L);
+    curl_easy_perform(t->curl);
+    curl_easy_setopt(t->curl, CURLOPT_NOBODY, 0L);
+    curl_easy_setopt(t->curl, CURLOPT_POST, 1L);
+}
+
+void taker_keepalive(p2c_taker_t *t)
+{
+    /* Cheap HEAD on the base host to keep the pooled TLS/H2 connection warm so
+     * the next real take reuses it (no fresh handshake => ~200ms not ~1500ms).
+     * MUST be called only from the take thread (shares t->curl, single-writer).
+     * Hits base_url root, NOT the take endpoint, so it never counts as a take
+     * (avoids the 429 ban on repeated takes). */
+    if (!t || !t->curl) return;
+    t->resp_len = 0;
+    t->resp[0] = '\0';
+    curl_easy_setopt(t->curl, CURLOPT_URL, t->cfg->base_url);
+    curl_easy_setopt(t->curl, CURLOPT_HTTPHEADER, NULL);
     curl_easy_setopt(t->curl, CURLOPT_NOBODY, 1L);
     curl_easy_perform(t->curl);
     curl_easy_setopt(t->curl, CURLOPT_NOBODY, 0L);

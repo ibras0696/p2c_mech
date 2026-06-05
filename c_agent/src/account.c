@@ -174,6 +174,8 @@ static void on_disconnected(void *user, int code)
 static void *take_thread(void *arg)
 {
     p2c_account_t *a = arg;
+    uint64_t last_warm_ns = now_ns();
+    const uint64_t WARM_EVERY_NS = 8000000000ull; /* 8s: keep take conn hot */
     while (a->alive && *a->global_running) {
         take_item_t item;
         pthread_mutex_lock(&a->r_lock);
@@ -182,6 +184,14 @@ static void *take_thread(void *arg)
             clock_gettime(CLOCK_REALTIME, &ts);
             ts.tv_sec += 1;
             pthread_cond_timedwait(&a->r_cv, &a->r_lock, &ts);
+            /* Idle: periodically warm the curl connection so the next take
+             * reuses a hot TLS/H2 conn instead of paying a fresh handshake. */
+            if (a->r_head == a->r_tail && now_ns() - last_warm_ns >= WARM_EVERY_NS) {
+                pthread_mutex_unlock(&a->r_lock);
+                taker_keepalive(a->taker);
+                last_warm_ns = now_ns();
+                pthread_mutex_lock(&a->r_lock);
+            }
         }
         if (a->r_head == a->r_tail) { pthread_mutex_unlock(&a->r_lock); continue; }
         item = a->ring[a->r_head];
@@ -190,6 +200,7 @@ static void *take_thread(void *arg)
 
         take_result_t res;
         taker_post(a->taker, item.id, &res);
+        last_warm_ns = now_ns();  /* a take also keeps the conn hot */
         atomic_fetch_sub(&a->inflight, 1);
 
         ev_take_result(a->id, item.id, res.status, res.http_ms, res.payment_id);
