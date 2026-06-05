@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -107,6 +108,7 @@ class AgentRuntimeManager:
         self._runtimes: dict[int, UserRuntime] = {}
         self._lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._win_consumer_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._local_dedupe: dict[str, float] = {}
         self._redis = self._build_redis_client()
@@ -115,12 +117,17 @@ class AgentRuntimeManager:
         if self._cleanup_task is not None and not self._cleanup_task.done():
             return
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        if self._redis is not None:
+            self._win_consumer_task = asyncio.create_task(self._consume_wins_loop())
 
     async def stop(self) -> None:
         self._stop_event.set()
         if self._cleanup_task is not None and not self._cleanup_task.done():
             self._cleanup_task.cancel()
             await asyncio.gather(self._cleanup_task, return_exceptions=True)
+        if self._win_consumer_task is not None and not self._win_consumer_task.done():
+            self._win_consumer_task.cancel()
+            await asyncio.gather(self._win_consumer_task, return_exceptions=True)
         async with self._lock:
             runtimes = list(self._runtimes.values())
             self._runtimes.clear()
@@ -296,6 +303,34 @@ class AgentRuntimeManager:
                 order.source_order_id,
                 type(exc).__name__,
             )
+
+    async def _consume_wins_loop(self) -> None:
+        """Bridge: pop wins the C agent claimed (pushed by the app-process
+        supervisor to KEY_WINS_PENDING) and surface them to the operator —
+        fetch details, store the order, send the paid/cancel notification."""
+        key = "p2c:wins:pending"  # mirrors agent_supervisor.KEY_WINS_PENDING
+        logger.info("win_consumer_started key=%s", key)
+        while not self._stop_event.is_set():
+            try:
+                popped = await self._redis.brpop(key, timeout=5)
+                if popped is None:
+                    continue
+                _, raw = popped
+                payload = json.loads(raw)
+                user_id = int(payload.get("user_id"))
+                payment_id = int(payload.get("payment_id") or 0)
+                order_id = str(payload.get("order_id") or "")
+                logger.info(
+                    "win_consumer_received user_id=%s payment_id=%s order=%s",
+                    user_id, payment_id, order_id,
+                )
+                runtime = await self.get_or_create(user_id)
+                await runtime.live_agent.surface_won_order(payment_id, source_order_id=order_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("win_consumer_error error=%s", type(exc).__name__)
+                await asyncio.sleep(1)
 
     async def _cleanup_loop(self) -> None:
         idle_ttl_seconds = max(1, int(self._settings.runtime_idle_ttl_seconds))

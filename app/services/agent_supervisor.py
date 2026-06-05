@@ -30,6 +30,18 @@ def k_account(account_id: str) -> str:
 
 KEY_ACCOUNTS_ENABLED = "p2c:accounts:enabled"
 
+# Cross-process win queue: the supervisor (app process) pushes wins here; the
+# bot process pops them, fetches details, and notifies the operator.
+KEY_WINS_PENDING = "p2c:wins:pending"
+
+
+def account_to_user_id(account: str) -> int | None:
+    raw = account[3:] if account.startswith("acc") else account
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
 
 def k_stat_takes(account: str) -> str:
     return f"p2c:stat:{account}:takes"
@@ -314,7 +326,24 @@ class AgentSupervisor:
         await self._record_event(
             account, order_id, KIND_CLAIM_WON, status=None, http_ms=None, payment_id=payment_id
         )
-        # Post-processing (§5.4): confirm/complete via the platform client.
+        # Hand the win to the bot process: it fetches details and notifies the
+        # operator with paid/cancel buttons. We do NOT auto-complete here — the
+        # operator confirms payment manually (oplatil) or cancels (otmena).
+        if self.redis is not None:
+            uid = account_to_user_id(account)
+            if uid is not None:
+                try:
+                    await self.redis.lpush(
+                        KEY_WINS_PENDING,
+                        json.dumps(
+                            {"user_id": uid, "account": account,
+                             "order_id": order_id, "payment_id": payment_id}
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("agent_win_push_failed account=%s error=%s", account, type(exc).__name__)
+        # Optional legacy auto-complete hook (disabled by default; operator flow
+        # is manual). Kept for a fully-automated deployment if ever re-enabled.
         if self.confirm_win is not None and payment_id is not None:
             try:
                 await self.confirm_win(account, payment_id)

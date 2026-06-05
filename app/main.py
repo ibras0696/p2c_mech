@@ -61,8 +61,12 @@ async def on_startup() -> None:
     # Cache-aside session loader: pull durable session from Postgres on miss.
     session_loader = _build_session_loader(settings)
 
-    # Win post-processing hook (confirm/complete) wired against the platform client.
-    confirm_win = _build_confirm_win(settings)
+    # Win post-processing: the operator confirms payment manually via the bot
+    # (paid/cancel buttons), so we do NOT auto-complete on win. The win is
+    # bridged to the bot process via Redis (KEY_WINS_PENDING). Use
+    # _build_confirm_win(settings) only for a fully-automated deployment.
+    confirm_win = None
+    _ = _build_confirm_win  # keep helper referenced for optional re-enable
 
     supervisor = AgentSupervisor(
         agent_bin=settings.agent_bin,

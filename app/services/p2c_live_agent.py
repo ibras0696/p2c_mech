@@ -240,6 +240,57 @@ class P2CLiveAgent:
             task.cancel()
         self._take_health_task = None
 
+    async def surface_won_order(self, payment_id: int, source_order_id: str = "") -> None:
+        """A win was claimed by the C agent (separate process). Fetch the order
+        details via the API, store it in state, and notify the operator with
+        paid/cancel buttons. Reuses the same path the Python claim used."""
+        if payment_id is None or payment_id <= 0:
+            logger.warning(
+                "surface_won_order_bad_payment_id user_id=%s payment_id=%s order=%s",
+                self._user_id, payment_id, source_order_id,
+            )
+            return
+        # Idempotent: ignore duplicate win signals for an order we already have.
+        if self._state.get_active_order(str(payment_id)) is not None:
+            return
+        try:
+            details = await self._confirm_owned(payment_id=int(payment_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "surface_won_order_confirm_failed user_id=%s payment_id=%s order=%s error=%s",
+                self._user_id, payment_id, source_order_id, type(exc).__name__,
+            )
+            return
+        order = ActiveOrder(
+            id=str(details.id),
+            amount=details.in_amount,
+            currency=details.in_asset,
+            direction="P2C",
+            url=details.url,
+            provider=details.provider,
+            payload=details.payload,
+            method_id=details.method_id,
+            source_order_id=source_order_id or "",
+            take_http_ms=0,
+            claim_total_ms=0,
+            claimed_at=datetime.now(UTC),
+            deadline_at=datetime.now(UTC) + timedelta(minutes=3),
+        )
+        self._state.upsert_active_order(order)
+        await self._persist_active_order(order)
+        logger.info(
+            "surface_won_order_ready user_id=%s payment_id=%s order=%s amount=%s %s brand=%s url_host=%s",
+            self._user_id, details.id, source_order_id, details.in_amount,
+            details.in_asset, details.brand_name, _url_host(details.url),
+        )
+        try:
+            await self._notify_order_ready(order)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "surface_won_order_notify_failed user_id=%s payment_id=%s error=%s",
+                self._user_id, payment_id, type(exc).__name__,
+            )
+
     async def complete_order(self, order_id: str) -> None:
         async with self._lock:
             if order_id in self._completing:
