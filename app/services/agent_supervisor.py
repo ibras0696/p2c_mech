@@ -272,9 +272,15 @@ class AgentSupervisor:
         rt = self._runtime(account)
         rt.orders_seen += 1
         await self._redis_incr(k_stat_orders_seen(account))
+        logger.info(
+            "agent_order_detected account=%s order=%s amount=%s currency=%s detect_ns=%s",
+            account, event.get("order", ""), event.get("amount", ""),
+            event.get("currency", ""), event.get("detect_ns", ""),
+        )
 
     async def on_take_sent(self, account: str, event: dict[str, Any]) -> None:
         self._runtime(account).takes += 1
+        logger.info("agent_take_sent account=%s order=%s", account, event.get("order", ""))
 
     async def on_take_result(self, account: str, event: dict[str, Any]) -> None:
         status = _as_int(event.get("status"))
@@ -293,6 +299,10 @@ class AgentSupervisor:
         await self._record_event(
             account, order_id, KIND_TAKE_RESULT, status=status, http_ms=http_ms, payment_id=payment_id
         )
+        logger.info(
+            "agent_take_result account=%s order=%s status=%s http_ms=%s payment_id=%s",
+            account, order_id, status, http_ms, payment_id,
+        )
 
     async def on_claim_won(self, account: str, event: dict[str, Any]) -> None:
         order_id = str(event.get("order", ""))
@@ -300,6 +310,7 @@ class AgentSupervisor:
         rt = self._runtime(account)
         rt.wins += 1
         await self._redis_incr(k_stat_wins(account))
+        logger.info("agent_claim_WON account=%s order=%s payment_id=%s", account, order_id, payment_id)
         await self._record_event(
             account, order_id, KIND_CLAIM_WON, status=None, http_ms=None, payment_id=payment_id
         )
@@ -323,6 +334,10 @@ class AgentSupervisor:
         status = _as_int(event.get("status"))
         await self._record_event(
             account, order_id, KIND_CLAIM_LOST, status=status, http_ms=None, payment_id=None
+        )
+        logger.info(
+            "agent_claim_lost account=%s order=%s status=%s reason=%s",
+            account, order_id, status, event.get("reason", ""),
         )
 
     async def on_heartbeat(self, event: dict[str, Any]) -> None:
