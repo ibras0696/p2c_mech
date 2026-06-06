@@ -4,6 +4,7 @@
 #include "events.h"
 
 #include <curl/curl.h>
+#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -22,6 +23,8 @@ extern CURLcode curl_easy_impersonate(CURL *handle, const char *target,
 struct p2c_taker {
     const p2c_config_t *cfg;
     CURL  *curl;
+    pthread_mutex_t curl_lock;               /* one CURL handle, two callers:
+                                                WS-thread take + keepalive   */
     char   cookie_raw[P2C_COOKIE_MAX];       /* "access_token=..; __cf_bm=.." */
     char   url_prefix[512];                  /* base + take path prefix     */
     char   resp[RESP_MAX];
@@ -56,6 +59,7 @@ p2c_taker_t *taker_create(const p2c_config_t *cfg, const char *cookie_header)
     t->cfg = cfg;
     t->curl = curl_easy_init();
     if (!t->curl) { free(t); return NULL; }
+    pthread_mutex_init(&t->curl_lock, NULL);
 
     snprintf(t->url_prefix, sizeof(t->url_prefix),
              "%s/internal/v1/p2c/payments/take/", cfg->base_url);
@@ -125,6 +129,7 @@ void taker_keepalive(p2c_taker_t *t)
      * Hits base_url root, NOT the take endpoint, so it never counts as a take
      * (avoids the 429 ban on repeated takes). */
     if (!t || !t->curl) return;
+    pthread_mutex_lock(&t->curl_lock);
     t->resp_len = 0;
     t->resp[0] = '\0';
     curl_easy_setopt(t->curl, CURLOPT_URL, t->cfg->base_url);
@@ -133,6 +138,7 @@ void taker_keepalive(p2c_taker_t *t)
     curl_easy_perform(t->curl);
     curl_easy_setopt(t->curl, CURLOPT_NOBODY, 0L);
     curl_easy_setopt(t->curl, CURLOPT_POST, 1L);
+    pthread_mutex_unlock(&t->curl_lock);
 }
 
 int taker_post(p2c_taker_t *t, const char *order_id, take_result_t *out)
@@ -145,6 +151,7 @@ int taker_post(p2c_taker_t *t, const char *order_id, take_result_t *out)
     struct curl_slist *hdrs = NULL;
     hdrs = curl_slist_append(hdrs, "Expect:");
 
+    pthread_mutex_lock(&t->curl_lock);
     t->resp_len = 0;
     t->resp[0] = '\0';
     out->status = 0;
@@ -165,6 +172,7 @@ int taker_post(p2c_taker_t *t, const char *order_id, take_result_t *out)
 
     if (rc != CURLE_OK) {
         snprintf(out->reason, sizeof(out->reason), "%s", curl_easy_strerror(rc));
+        pthread_mutex_unlock(&t->curl_lock);
         return -1;
     }
 
@@ -220,6 +228,7 @@ int taker_post(p2c_taker_t *t, const char *order_id, take_result_t *out)
             yyjson_doc_free(doc);
         }
     }
+    pthread_mutex_unlock(&t->curl_lock);
     return 0;
 }
 
@@ -227,5 +236,6 @@ void taker_destroy(p2c_taker_t *t)
 {
     if (!t) return;
     if (t->curl) curl_easy_cleanup(t->curl);
+    pthread_mutex_destroy(&t->curl_lock);
     free(t);
 }
