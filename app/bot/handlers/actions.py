@@ -107,10 +107,13 @@ def build_actions_router(
             snapshot = await runtime_manager.pause(user_id)
         remote_warning: str | None = None
         try:
-            await agent_client.stop()
+            # Pause via mode, NOT shutdown: keep the C-agent process, its WS and
+            # the warm take connection alive so resuming is instant (no cold
+            # TLS handshake). Only taking is suspended.
+            await agent_client.set_mode(value="paused", account=default_account_id(user_id))
         except AgentClientError as exc:
             remote_warning = exc.message
-            logger.warning("event=agent_stop_remote_failed user_id=%s error=%s", user_id, exc.message)
+            logger.warning("event=agent_pause_remote_failed user_id=%s error=%s", user_id, exc.message)
         latency_ms = int((datetime.now(UTC) - started_at).total_seconds() * 1000)
         logger.info(
             "event=agent_pause_applied user_id=%s latency_ms=%d mode=%s active_count=%d",
@@ -154,6 +157,9 @@ async def _start_remote_agent(
             label=account,
             filters=filters,
         )
+        # Re-adding an existing (paused) account does not reset its mode, so
+        # explicitly resume taking. Harmless on a fresh add (already running).
+        await agent_client.set_mode(value="running", account=account)
     except AgentClientError as exc:
         logger.warning(
             "event=agent_start_remote_failed user_id=%s account=%s error=%s",
