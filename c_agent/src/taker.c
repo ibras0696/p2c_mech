@@ -172,6 +172,21 @@ int taker_post(p2c_taker_t *t, const char *order_id, take_result_t *out)
     curl_easy_getinfo(t->curl, CURLINFO_RESPONSE_CODE, &code);
     out->status = (int)code;
 
+    /* DIAG: where does the take latency go? newconn>0 + tls>0 => connection NOT
+     * reused (fresh TLS each take => keepalive isn't working). newconn=0 + high
+     * ttfb => server-side processing/RTT dominates (warmth can't help). */
+    {
+        double t_dns=0, t_conn=0, t_tls=0, t_ttfb=0, t_total=0; long nconn=0;
+        curl_easy_getinfo(t->curl, CURLINFO_NAMELOOKUP_TIME, &t_dns);
+        curl_easy_getinfo(t->curl, CURLINFO_CONNECT_TIME, &t_conn);
+        curl_easy_getinfo(t->curl, CURLINFO_APPCONNECT_TIME, &t_tls);
+        curl_easy_getinfo(t->curl, CURLINFO_STARTTRANSFER_TIME, &t_ttfb);
+        curl_easy_getinfo(t->curl, CURLINFO_TOTAL_TIME, &t_total);
+        curl_easy_getinfo(t->curl, CURLINFO_NUM_CONNECTS, &nconn);
+        log_info("take timing status=%ld dns=%.0f conn=%.0f tls=%.0f ttfb=%.0f total=%.0f newconn=%ld",
+                 code, t_dns*1000, t_conn*1000, t_tls*1000, t_ttfb*1000, t_total*1000, nconn);
+    }
+
     /* Log the raw body on a win (and any non-400) so the real payment_id field
      * shape is visible — the take 200 body schema isn't documented yet. */
     if (code == 200 || (code != 400 && code != 0))
