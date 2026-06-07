@@ -25,7 +25,7 @@ struct p2c_taker {
     CURL  *curl;
     pthread_mutex_t curl_lock;               /* one CURL handle, two callers:
                                                 WS-thread take + keepalive   */
-    char   cookie_raw[P2C_COOKIE_MAX];       /* "access_token=..; __cf_bm=.." */
+    char   cookie_raw[P2C_COOKIE_MAX];       /* "access_token=.." (access-only) */
     char   url_prefix[512];                  /* base + take path prefix     */
     char   resp[RESP_MAX];
     size_t resp_len;
@@ -43,8 +43,11 @@ static size_t on_body(char *ptr, size_t size, size_t nmemb, void *userdata)
     return n; /* consume all, even if we truncated our copy */
 }
 
-/* Seed the cookie engine. curl merges these into its in-memory jar; from then
- * on it captures rotated __cf_bm from Set-Cookie and sends the freshest one. */
+/* Set a STATIC Cookie header. The cookie engine is intentionally disabled (see
+ * taker_create), so curl never captures or resends Cloudflare's rotating
+ * __cf_bm from Set-Cookie. We send ONLY what we seed here (access_token), to
+ * minimise our Cloudflare bot-management fingerprint — a stable __cf_bm lets CF
+ * correlate our takes across requests and progressively throttle us. */
 static void apply_cookie(struct p2c_taker *t, const char *cookie_header)
 {
     snprintf(t->cookie_raw, sizeof(t->cookie_raw), "%s",
@@ -65,9 +68,9 @@ p2c_taker_t *taker_create(const p2c_config_t *cfg, const char *cookie_header)
              "%s/internal/v1/p2c/payments/take/", cfg->base_url);
 
     CURL *c = t->curl;
-    /* Enable the in-memory cookie engine BEFORE seeding: "" turns on cookie
-     * parsing/storage so Set-Cookie (rotated __cf_bm) is captured and resent. */
-    curl_easy_setopt(c, CURLOPT_COOKIEFILE, "");
+    /* Cookie engine deliberately NOT enabled: we never call CURLOPT_COOKIEFILE,
+     * so curl ignores Set-Cookie and only sends our static access-only cookie.
+     * This keeps __cf_bm out of every take (anti-Cloudflare-fingerprint). */
     apply_cookie(t, cookie_header);
     curl_easy_setopt(c, CURLOPT_POST, 1L);
     curl_easy_setopt(c, CURLOPT_POSTFIELDS, "");

@@ -116,7 +116,10 @@ def _build_session_loader(settings: object):  # type: ignore[no-untyped-def]
             return None
         return AgentSession(
             access_token=stored.access_token,
-            cookie_header=stored.cookie_header,
+            # access-only (no __cf_bm): the cache-aside / reconnect path must
+            # match the add_account path, else a WS reconnect re-seeds the C
+            # agent with the Cloudflare bot cookie we are trying to shed.
+            cookie_header=stored.cookie_header_access_only,
         )
 
     return loader
