@@ -129,28 +129,27 @@ static void on_order(const p2c_order_t *order, void *user)
     if (!pass) return;
 
     if (seen_check_add(&a->seen, order->id)) return;       /* already tried  */
+    if (atomic_load(&a->inflight) >= MAX_INFLIGHT) return; /* slot budget    */
 
     uint64_t detect_ns = now_ns() - ctx->t0;
     ev_order_detected(a->id, order->id, order->amount, order->currency, detect_ns);
 
-    /* Fire the take INLINE on the WS thread — no handoff to a take thread.
-     * The condvar wakeup/scheduler latency (~50-100us) is dead weight in a
-     * sub-ms race, so we pay the blocking POST right here. taker_post locks
-     * the shared CURL handle (vs the keepalive thread). Cost: the WS service
-     * loop stalls for the POST duration, so orders arriving mid-take in the
-     * same frame wait — acceptable, we'd lose those anyway. */
-    atomic_fetch_add(&a->takes, 1);
-    ev_take_sent(a->id, order->id);
-
-    take_result_t res;
-    taker_post(a->taker, order->id, &res);
-    ev_take_result(a->id, order->id, res.status, res.http_ms, res.payment_id);
-    if (res.status == 200) {
-        atomic_fetch_add(&a->wins, 1);
-        ev_claim_won(a->id, order->id, res.payment_id);
+    /* Enqueue to a take worker. The decision stays here (WS thread) but the
+     * blocking 600-1900ms POST is handed off so the WS service loop keeps
+     * reading new list:update frames. Firing inline blinded us to every order
+     * that arrived during a take — a far worse trade than the ~50us handoff. */
+    pthread_mutex_lock(&a->r_lock);
+    int next = (a->r_tail + 1) % TAKE_RING;
+    if (next != a->r_head) {
+        snprintf(a->ring[a->r_tail].id, P2C_ID_LEN, "%s", order->id);
+        a->r_tail = next;
+        atomic_fetch_add(&a->inflight, 1);
+        atomic_fetch_add(&a->takes, 1);
+        pthread_cond_signal(&a->r_cv);
+        pthread_mutex_unlock(&a->r_lock);
+        ev_take_sent(a->id, order->id);
     } else {
-        ev_claim_lost(a->id, order->id, res.status,
-                      res.reason[0] ? res.reason : "");
+        pthread_mutex_unlock(&a->r_lock);  /* ring full: drop */
     }
 }
 
@@ -173,22 +172,47 @@ static void on_disconnected(void *user, int code)
     ev_ws_disconnected(a->id, code);
 }
 
-/* ---- warm thread ----------------------------------------------------- */
-/* Takes now fire inline on the WS thread (on_order). This thread exists only
- * to keep the take CURL connection hot while idle, so the next inline take
- * reuses a warm TLS/H2 conn (no fresh handshake). taker_keepalive locks the
- * shared CURL handle, so it's safe alongside a concurrent inline take. */
+/* ---- take thread ----------------------------------------------------- */
+/* Consumes the take ring (non-blocking handoff from the WS thread) and runs the
+ * blocking POST here, so the WS thread is never stalled. While idle it warms the
+ * CURL connection every 8s so the next take reuses a hot TLS/H2 conn. */
 static void *take_thread(void *arg)
 {
     p2c_account_t *a = arg;
-    const uint64_t WARM_EVERY_NS = 8000000000ull; /* 8s: keep take conn hot */
     uint64_t last_warm_ns = now_ns();
+    const uint64_t WARM_EVERY_NS = 8000000000ull; /* 8s: keep take conn hot */
     while (a->alive && *a->global_running) {
-        struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
-        nanosleep(&ts, NULL);
-        if (now_ns() - last_warm_ns >= WARM_EVERY_NS) {
-            taker_keepalive(a->taker);
-            last_warm_ns = now_ns();
+        take_item_t item;
+        pthread_mutex_lock(&a->r_lock);
+        while (a->r_head == a->r_tail && a->alive && *a->global_running) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_sec += 1;
+            pthread_cond_timedwait(&a->r_cv, &a->r_lock, &ts);
+            if (a->r_head == a->r_tail && now_ns() - last_warm_ns >= WARM_EVERY_NS) {
+                pthread_mutex_unlock(&a->r_lock);
+                taker_keepalive(a->taker);
+                last_warm_ns = now_ns();
+                pthread_mutex_lock(&a->r_lock);
+            }
+        }
+        if (a->r_head == a->r_tail) { pthread_mutex_unlock(&a->r_lock); continue; }
+        item = a->ring[a->r_head];
+        a->r_head = (a->r_head + 1) % TAKE_RING;
+        pthread_mutex_unlock(&a->r_lock);
+
+        take_result_t res;
+        taker_post(a->taker, item.id, &res);
+        last_warm_ns = now_ns();
+        atomic_fetch_sub(&a->inflight, 1);
+
+        ev_take_result(a->id, item.id, res.status, res.http_ms, res.payment_id);
+        if (res.status == 200) {
+            atomic_fetch_add(&a->wins, 1);
+            ev_claim_won(a->id, item.id, res.payment_id);
+        } else {
+            ev_claim_lost(a->id, item.id, res.status,
+                          res.reason[0] ? res.reason : "");
         }
     }
     return NULL;
