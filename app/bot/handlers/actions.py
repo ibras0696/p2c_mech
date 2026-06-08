@@ -153,11 +153,7 @@ async def _start_remote_agent(
         await agent_client.add_account(
             account=account,
             access_token=session.access_token,
-            # access-only cookie: strip __cf_bm (and never pass did) so the C
-            # agent's WS upgrade and take POST carry no Cloudflare bot cookie.
-            # A stable __cf_bm lets Cloudflare correlate and throttle our takes
-            # (rising ttfb); going anonymous minimises that fingerprint.
-            cookie_header=session.cookie_header_access_only,
+            cookie_header=session.cookie_header,
             label=account,
             filters=filters,
         )
