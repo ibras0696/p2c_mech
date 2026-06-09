@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     redis_db: int = Field(default=0, alias="REDIS_DB")
     redis_password: str = Field(default="", alias="REDIS_PASSWORD")
     redis_url: str = Field(default="", alias="REDIS_URL")
-    session_cache_ttl_seconds: int = Field(default=900, alias="SESSION_CACHE_TTL_SECONDS")
+    session_cache_ttl_seconds: int = Field(default=3600, alias="SESSION_CACHE_TTL_SECONDS")
 
     telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
     telegram_admin_ids: str = Field(default="", alias="TELEGRAM_ADMIN_IDS")
@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     agent_api_timeout_seconds: float = Field(default=10.0, alias="AGENT_API_TIMEOUT_SECONDS")
     agent_bin: str = Field(default="p2c_agent", alias="AGENT_BIN")
     agent_impersonate: str = Field(default="chrome131", alias="AGENT_IMPERSONATE")
-    session_ttl_seconds: int = Field(default=1500, alias="SESSION_TTL_SECONDS")
+    session_ttl_seconds: int = Field(default=3600, alias="SESSION_TTL_SECONDS")
     account_ttl_seconds: int = Field(default=1800, alias="ACCOUNT_TTL_SECONDS")
     stat_http_ms_max_samples: int = Field(default=1000, alias="STAT_HTTP_MS_MAX_SAMPLES")
 
