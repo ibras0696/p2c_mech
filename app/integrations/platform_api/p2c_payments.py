@@ -56,7 +56,12 @@ class P2CPaymentsClient:
         self._take_send_cf_cookie = take_send_cf_cookie
         self._client = self._build_httpx_client()
         # curl-cffi session for take POSTs: Chrome TLS fingerprint + HTTP/2 keepalive.
-        self._curl_session = CurlAsyncSession(impersonate=_CURL_IMPERSONATE, max_clients=1)
+        # max_clients must exceed the take burst size AND leave room for takes of
+        # concurrent orders — with max_clients=1 the parallel burst serializes
+        # over a single curl handle (the 2 POSTs block each other). Concurrent
+        # requests to the same host reuse the warm H2 connection as separate
+        # streams, so this gives real parallelism, not extra TLS handshakes.
+        self._curl_session = CurlAsyncSession(impersonate=_CURL_IMPERSONATE, max_clients=16)
 
     def _build_httpx_client(self) -> httpx.AsyncClient:
         http2_enabled = _is_http2_supported()
