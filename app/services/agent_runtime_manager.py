@@ -112,6 +112,10 @@ class AgentRuntimeManager:
         self._stop_event = asyncio.Event()
         self._local_dedupe: dict[str, float] = {}
         self._redis = self._build_redis_client()
+        # Stats sink shared with the app's /stats screen (same Postgres history).
+        from app.repositories.agent_stats_repo import build_agent_stats_repository
+
+        self._stats_repo = build_agent_stats_repository(database_url=settings.database_url)
 
     async def start(self) -> None:
         if self._cleanup_task is not None and not self._cleanup_task.done():
@@ -156,6 +160,8 @@ class AgentRuntimeManager:
                 active_order_repository=scoped_order_repo,
                 notify_order_ready=lambda order: self._notify_order_ready(user_id, order),
                 user_id=user_id,
+                redis=self._redis,
+                stats_repo=self._stats_repo,
             )
             runtime = UserRuntime(
                 user_id=user_id,

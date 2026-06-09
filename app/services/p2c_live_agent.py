@@ -16,6 +16,12 @@ from app.core.logging import get_logger
 from app.integrations.platform_api import P2CPaymentDetails, P2CPaymentsClient, P2CPaymentsError
 from app.integrations.platform_ws.p2c_socket import P2CSocketClient, P2CSocketConfig
 from app.repositories.active_orders import ActiveOrderRepository, InMemoryActiveOrderRepository
+from app.repositories.agent_stats_repo import (
+    KIND_CLAIM_LOST,
+    KIND_CLAIM_WON,
+    KIND_TAKE_RESULT,
+    OrderEvent,
+)
 from app.repositories.platform_session import PlatformSessionRepository
 from app.services.p2c_events import P2COrderEvent, parse_order_events
 
@@ -49,11 +55,19 @@ class P2CLiveAgent:
         notify_order_ready: OrderNotifier,
         active_order_repository: ActiveOrderRepository | None = None,
         user_id: int = 0,
+        redis: object | None = None,
+        stats_repo: object | None = None,
     ) -> None:
         self._settings = settings
         self._state = state
         self._session_repository = session_repository
         self._notify_order_ready = notify_order_ready
+        # Stats sinks (shared with the /stats screen): Redis live counters and
+        # the Postgres order_events history. The Python agent records into the
+        # same keys the C agent used, so the stats button reflects its activity.
+        self._redis = redis
+        self._stats_repo = stats_repo
+        self._stat_account = f"acc{user_id}"
         self._payments_client = P2CPaymentsClient(
             base_url=settings.platform_base_url,
             take_send_cf_cookie=settings.platform_take_send_cf_cookie,
@@ -92,6 +106,51 @@ class P2CLiveAgent:
     @property
     def _warm_channels(self) -> int:
         return max(1, int(getattr(self._settings, "platform_take_burst_size", 1)))
+
+    # ----- stats sinks (shared with the /stats screen) --------------------
+    def _stat_incr(self, suffix: str, amount: int = 1) -> None:
+        """Fire-and-forget INCR of a Redis live counter. Never blocks the take."""
+        if self._redis is None:
+            return
+        key = f"p2c:stat:{self._stat_account}:{suffix}"
+
+        async def _do() -> None:
+            try:
+                await self._redis.incrby(key, amount)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("stat_incr_failed key=%s error=%s", key, type(exc).__name__)
+
+        asyncio.create_task(_do())
+
+    def _record_stat_event(
+        self,
+        *,
+        order_id: str,
+        kind: str,
+        status: int | None,
+        http_ms: float | None = None,
+        payment_id: int | None = None,
+    ) -> None:
+        """Fire-and-forget persist of an order_events row (recent + p50/p99)."""
+        if self._stats_repo is None:
+            return
+        event = OrderEvent(
+            account_id=self._stat_account,
+            order_id=order_id,
+            kind=kind,
+            status=status,
+            http_ms=http_ms,
+            payment_id=payment_id,
+            ts=datetime.now(UTC),
+        )
+
+        async def _do() -> None:
+            try:
+                await self._stats_repo.record_event(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("record_stat_event_failed error=%s", type(exc).__name__)
+
+        asyncio.create_task(_do())
 
     async def _ensure_account_method_id(self, session: PlatformSession) -> None:
         """Resolve the receiving account id once at start so take() can bind it."""
@@ -521,6 +580,7 @@ class P2CLiveAgent:
         events = parse_order_events(message)
         if events:
             logger.info("p2c_live_agent_events_received count=%d", len(events))
+            self._stat_incr("orders_seen", len(events))  # stats: orders seen
         for event in events:
             generation = self._pause_generation
             task = asyncio.create_task(self._process_event(event, received_at, generation))
@@ -636,6 +696,17 @@ class P2CLiveAgent:
                 received_at=received_at,
             )
             take_ms = int((time.perf_counter() - take_started) * 1000)
+            # stats: a returned payment_id means HTTP 200 == we won the order.
+            self._stat_incr("takes")
+            self._stat_incr("wins")
+            self._record_stat_event(
+                order_id=event.socket_order_id, kind=KIND_TAKE_RESULT,
+                status=200, http_ms=take_ms, payment_id=payment_id,
+            )
+            self._record_stat_event(
+                order_id=event.socket_order_id, kind=KIND_CLAIM_WON,
+                status=200, http_ms=take_ms, payment_id=payment_id,
+            )
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
             logger.info(
                 "event=take_result user_id=%s payment_id=%s source_order_id=%s latency_ms=%d detect_to_take_start_ms=%d take_http_ms=%d",
@@ -666,6 +737,23 @@ class P2CLiveAgent:
             )
         except P2CPaymentsError as exc:
             reason = "lost_race" if "InvalidStatus" in str(exc) else "api_error"
+            # stats: only a take that never returned a payment_id is a loss; if
+            # payment_id is set the take already won (this is a confirm error).
+            if payment_id is None:
+                take_ms_loss = (
+                    int((time.perf_counter() - take_started) * 1000)
+                    if take_started is not None
+                    else None
+                )
+                self._stat_incr("takes")
+                self._record_stat_event(
+                    order_id=event.socket_order_id, kind=KIND_TAKE_RESULT,
+                    status=400 if reason == "lost_race" else 0, http_ms=take_ms_loss,
+                )
+                self._record_stat_event(
+                    order_id=event.socket_order_id, kind=KIND_CLAIM_LOST,
+                    status=400 if reason == "lost_race" else 0, http_ms=take_ms_loss,
+                )
             logger.info(
                 "event=claim_failed user_id=%s payment_id=%s source_order_id=%s latency_ms=%d reason=%s error=%s amount=%s currency=%s provider=%s brand=%s queue_wait_ms=%d detect_to_take_start_ms=%d take_http_ms=%s",
                 self._user_id,
