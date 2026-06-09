@@ -51,6 +51,21 @@ def build_agent_remote_router(
         await _show_stats(callback, callback.from_user.id)
         await callback.answer()
 
+    @router.callback_query(F.data == "stats:reset")
+    async def callback_stats_reset(callback: CallbackQuery) -> None:
+        if not await ensure_allowed_callback(callback, access_service):
+            return
+        user_id = callback.from_user.id
+        account = default_account_id(user_id)
+        try:
+            await agent_client.reset_stats(account=account)
+        except AgentClientError as exc:
+            await callback.answer(exc.message, show_alert=True)
+            return
+        logger.info("event=stats_reset user_id=%s account=%s", user_id, account)
+        await _show_stats(callback, user_id)
+        await callback.answer("Статистика сброшена")
+
     @router.message(Command("agent_status"))
     async def handle_status_command(message: Message) -> None:
         if not await ensure_allowed_message(message, access_service):

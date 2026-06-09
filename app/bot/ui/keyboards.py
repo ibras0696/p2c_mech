@@ -73,8 +73,9 @@ def stats_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text="🔄 Обновить", callback_data="stats:view")
     builder.button(text="🛰 Статус", callback_data="agent:status")
+    builder.button(text="🗑 Сбросить", callback_data="stats:reset")
     builder.button(text="⬅️ Назад", callback_data="panel:refresh")
-    builder.adjust(2, 1)
+    builder.adjust(2, 1, 1)
     return builder.as_markup()
 
 

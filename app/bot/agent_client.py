@@ -160,6 +160,12 @@ class AgentClient:
             params["period"] = period
         return await self._request("GET", "/stats", params=params)
 
+    async def reset_stats(self, *, account: str | None = None) -> dict[str, Any]:
+        params: dict[str, str] = {}
+        if account:
+            params["account"] = account
+        return await self._request("POST", "/stats/reset", params=params)
+
 
 def _extract_detail(response: httpx.Response) -> str:
     try:

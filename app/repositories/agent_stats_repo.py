@@ -51,6 +51,11 @@ class AgentStatsRepository(ABC):
     ) -> StatsAggregate:
         raise NotImplementedError
 
+    @abstractmethod
+    async def reset(self, *, account_id: str | None = None) -> None:
+        """Delete recorded events. account_id=None wipes everything."""
+        raise NotImplementedError
+
 
 class InMemoryAgentStatsRepository(AgentStatsRepository):
     """Fallback used when DATABASE_URL is unset (e.g. tests, local dev)."""
@@ -60,6 +65,12 @@ class InMemoryAgentStatsRepository(AgentStatsRepository):
 
     async def record_event(self, event: OrderEvent) -> None:
         self._events.append(event)
+
+    async def reset(self, *, account_id: str | None = None) -> None:
+        if account_id is None:
+            self._events.clear()
+        else:
+            self._events = [e for e in self._events if e.account_id != account_id]
 
     async def aggregate(
         self, *, account_id: str | None, since: datetime | None, recent_limit: int = 20
@@ -111,6 +122,14 @@ class PostgresAgentStatsRepository(AgentStatsRepository):
             event.payment_id,
             event.ts,
         )
+
+    async def reset(self, *, account_id: str | None = None) -> None:
+        pool = await self._get_pool()
+        await self._ensure_schema(pool)
+        if account_id is None:
+            await pool.execute("delete from order_events")
+        else:
+            await pool.execute("delete from order_events where account_id = $1", account_id)
 
     async def aggregate(
         self, *, account_id: str | None, since: datetime | None, recent_limit: int = 20

@@ -8,6 +8,7 @@ from fastapi import APIRouter, Query
 from app.core.logging import get_logger
 from app.services.agent_registry import get_stats_redis, get_stats_repo
 from app.services.agent_supervisor import (
+    k_stat_http_ms,
     k_stat_orders_seen,
     k_stat_takes,
     k_stat_wins,
@@ -107,3 +108,30 @@ async def get_stats(
         "live": live,
         "aggregate": aggregate,
     }
+
+
+@router.post("/stats/reset")
+async def reset_stats(account: str | None = Query(default=None)) -> dict[str, Any]:
+    """Wipe stats: Redis live counters + Postgres order_events history.
+
+    account=None resets everything; otherwise only that account's data.
+    """
+    redis = get_stats_redis()
+    repo = get_stats_repo()
+    if redis is not None and account:
+        try:
+            await redis.delete(
+                k_stat_takes(account),
+                k_stat_wins(account),
+                k_stat_orders_seen(account),
+                k_stat_http_ms(account),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stats_reset_redis_failed error=%s", type(exc).__name__)
+    if repo is not None:
+        try:
+            await repo.reset(account_id=account)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stats_reset_repo_failed error=%s", type(exc).__name__)
+    logger.info("event=stats_reset account=%s", account)
+    return {"ok": True, "account": account}
