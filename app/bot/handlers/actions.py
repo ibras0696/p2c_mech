@@ -142,6 +142,18 @@ async def _start_remote_agent(
     The local runtime has already been started, so a remote failure is
     surfaced as a non-fatal warning instead of crashing the bot.
     """
+    # When the Python live agent owns the hot path (socket + take), do NOT also
+    # spin up the C agent — two sockets on one account race each other and trip
+    # Cloudflare. The Python agent is started by the runtime manager separately.
+    from app.core.config import get_settings
+
+    if get_settings().platform_python_socket_enabled:
+        logger.info(
+            "event=agent_start_remote_skipped user_id=%s reason=python_socket_authority",
+            user_id,
+        )
+        return None
+
     account = default_account_id(user_id)
     filters = FilterPayload(
         min_amount=int(snapshot.min_amount),
