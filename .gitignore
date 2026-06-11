@@ -25,3 +25,14 @@ storage-state.json
 playwright-report/
 test-results/
 .DS_Store
+
+# Throwaway server probe/deploy scripts (never commit — may hold creds)
+/deploy.py
+/probe.py
+/ping.py
+/stats.py
+/latency_probe.py
+/rtt_probe.py
+/triangulate.py
+/triangulate.sh
+/setup_server.sh

@@ -68,6 +68,9 @@ class P2CLiveAgent:
         self._redis = redis
         self._stats_repo = stats_repo
         self._stat_account = f"acc{user_id}"
+        # Strong refs to fire-and-forget stat tasks so the event loop can't GC
+        # them mid-flight; each removes itself on completion.
+        self._bg_tasks: set[asyncio.Task[None]] = set()
         self._payments_client = P2CPaymentsClient(
             base_url=settings.platform_base_url,
             take_send_cf_cookie=settings.platform_take_send_cf_cookie,
@@ -108,6 +111,12 @@ class P2CLiveAgent:
         return max(1, int(getattr(self._settings, "platform_take_burst_size", 1)))
 
     # ----- stats sinks (shared with the /stats screen) --------------------
+    def _spawn_bg(self, coro: Awaitable[None]) -> None:
+        """Run a best-effort coroutine, keeping a strong ref until it finishes."""
+        task = asyncio.create_task(coro)  # type: ignore[arg-type]
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
     def _stat_incr(self, suffix: str, amount: int = 1) -> None:
         """Fire-and-forget INCR of a Redis live counter. Never blocks the take."""
         if self._redis is None:
@@ -120,7 +129,7 @@ class P2CLiveAgent:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("stat_incr_failed key=%s error=%s", key, type(exc).__name__)
 
-        asyncio.create_task(_do())
+        self._spawn_bg(_do())
 
     def _record_stat_event(
         self,
@@ -150,7 +159,7 @@ class P2CLiveAgent:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("record_stat_event_failed error=%s", type(exc).__name__)
 
-        asyncio.create_task(_do())
+        self._spawn_bg(_do())
 
     async def _ensure_account_method_id(self, session: PlatformSession) -> None:
         """Resolve the receiving account id once at start so take() can bind it."""
@@ -696,15 +705,12 @@ class P2CLiveAgent:
                 received_at=received_at,
             )
             take_ms = int((time.perf_counter() - take_started) * 1000)
-            # stats: a returned payment_id means HTTP 200 == we won the order.
+            # stats: a returned payment_id means the take POST got HTTP 200.
+            # Count the take now; the WIN is counted only after _confirm_owned
+            # below, so an unconfirmed/failed confirm doesn't inflate wins.
             self._stat_incr("takes")
-            self._stat_incr("wins")
             self._record_stat_event(
                 order_id=event.socket_order_id, kind=KIND_TAKE_RESULT,
-                status=200, http_ms=take_ms, payment_id=payment_id,
-            )
-            self._record_stat_event(
-                order_id=event.socket_order_id, kind=KIND_CLAIM_WON,
                 status=200, http_ms=take_ms, payment_id=payment_id,
             )
             total_from_detect_ms = int((time.perf_counter() - received_at) * 1000)
@@ -734,6 +740,12 @@ class P2CLiveAgent:
                 details.id,
                 confirm_ms,
                 details.status,
+            )
+            # stats: confirmed ownership == a real win.
+            self._stat_incr("wins")
+            self._record_stat_event(
+                order_id=event.socket_order_id, kind=KIND_CLAIM_WON,
+                status=200, http_ms=take_ms, payment_id=payment_id,
             )
         except P2CPaymentsError as exc:
             reason = "lost_race" if "InvalidStatus" in str(exc) else "api_error"
