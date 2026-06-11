@@ -55,8 +55,20 @@ def _require_supervisor() -> AgentSupervisor:
     return supervisor
 
 
+def _c_agent_disabled() -> bool:
+    """The C agent is retired in favour of the Python live agent. When the
+    Python socket owns the hot path, refuse to spawn/feed the C agent so it can
+    never accidentally start a second competing socket on the same account."""
+    from app.core.config import get_settings
+
+    return bool(get_settings().platform_python_socket_enabled)
+
+
 @router.post("/start")
 async def start_agent() -> dict[str, Any]:
+    if _c_agent_disabled():
+        logger.info("c_agent_start_skipped reason=python_socket_authority")
+        return {"running": False, "started": False, "disabled": "c_agent"}
     supervisor = _require_supervisor()
     started = await supervisor.spawn()
     return {"running": supervisor.running, "started": started}
@@ -71,6 +83,9 @@ async def stop_agent() -> dict[str, Any]:
 
 @router.post("/account")
 async def upsert_account(payload: AccountPayload) -> dict[str, Any]:
+    if _c_agent_disabled():
+        logger.info("c_agent_account_skipped reason=python_socket_authority account=%s", payload.account)
+        return {"ok": True, "account": payload.account, "disabled": "c_agent"}
     supervisor = _require_supervisor()
     session = AgentSession(
         access_token=payload.access_token,
